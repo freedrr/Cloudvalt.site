@@ -1,0 +1,160 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User account information, subscription tier, and overall storage quotas",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Full name or alias"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "Profile photo URL"
+        },
+        "role": {
+          "type": "string",
+          "description": "User visual creator role"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Current storage subscription plan",
+          "enum": ["100 MB Free", "50 GB", "250 GB", "1 TB", "100 MB Free (Test Mode)", "50 GB Starter", "250 GB Pro Studio", "1 TB Ultimate"]
+        },
+        "maxStorageBytes": {
+          "type": "number",
+          "description": "Maximum allowed storage in bytes"
+        },
+        "usedStorageBytes": {
+          "type": "number",
+          "description": "Total bytes used"
+        },
+        "storageUsed": {
+          "type": "number",
+          "description": "Total storage bytes used"
+        },
+        "storageRemaining": {
+          "type": "number",
+          "description": "Remaining storage space in bytes"
+        },
+        "storageUsedFormatted": {
+          "type": "string",
+          "description": "Human readable storage used"
+        },
+        "storageRemainingFormatted": {
+          "type": "string",
+          "description": "Human readable storage remaining"
+        },
+        "fileCount": {
+          "type": "number",
+          "description": "Total number of files stored in user vault"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Account creation ISO timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last profile update ISO timestamp"
+        }
+      },
+      "required": ["uid", "email", "plan", "maxStorageBytes"]
+    },
+    "UserFile": {
+      "title": "User File",
+      "description": "Individual photo, video, or asset uploaded by the user with metadata and Backblaze B2 storage pointers",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique file identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "File name e.g. vacation.jpg"
+        },
+        "type": {
+          "type": "string",
+          "description": "Category of file",
+          "enum": ["image", "video", "document", "audio", "archive", "code", "other"]
+        },
+        "size": {
+          "type": "number",
+          "description": "File size in bytes"
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "MIME type e.g. image/jpeg"
+        },
+        "b2FileId": {
+          "type": "string",
+          "description": "Backblaze B2 storage identifier"
+        },
+        "b2FileName": {
+          "type": "string",
+          "description": "Path in Backblaze B2 bucket e.g. users/123/vacation.jpg"
+        },
+        "b2BucketName": {
+          "type": "string",
+          "description": "Backblaze B2 bucket name"
+        },
+        "uploadedAt": {
+          "type": "string",
+          "description": "Timestamp when uploaded"
+        },
+        "thumbnailUrl": {
+          "type": "string",
+          "description": "Thumbnail preview URL or null"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owner user UID"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "Owner user email address"
+        },
+        "url": {
+          "type": "string",
+          "description": "Direct download or viewing URL"
+        },
+        "isFavorite": {
+          "type": "boolean",
+          "description": "Whether file is marked as favorite"
+        },
+        "isDeleted": {
+          "type": "boolean",
+          "description": "Whether file is currently in trash"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp of last modification"
+        }
+      },
+      "required": ["name", "type", "size", "userId", "uploadedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Stores user account profile, exact storage limits, used/remaining calculations, and subscription tier"
+    },
+    "/users/{userId}/files/{fileId}": {
+      "schema": "UserFile",
+      "description": "Stores user uploaded files arranged in order with metadata and Backblaze B2 pointers"
+    },
+    "/files/{fileId}": {
+      "schema": "UserFile",
+      "description": "Separate files table storing file data, name, size, Backblaze B2 identifiers, and user ownership"
+    }
+  }
+}

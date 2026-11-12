@@ -1,0 +1,130 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net - Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128
+        && data.email is string && data.email.size() > 3 && data.email.size() <= 256
+        && data.plan in ['100 MB Free', '50 GB', '250 GB', '1 TB', '100 MB Free (Test Mode)', '50 GB Starter', '250 GB Pro Studio', '1 TB Ultimate']
+        && data.maxStorageBytes is number && data.maxStorageBytes >= 0
+        && (!('usedStorageBytes' in data) || (data.usedStorageBytes is number && data.usedStorageBytes >= 0))
+        && (!('storageUsed' in data) || (data.storageUsed is number && data.storageUsed >= 0))
+        && (!('storageRemaining' in data) || (data.storageRemaining is number && data.storageRemaining >= 0))
+        && (!('storageUsedFormatted' in data) || (data.storageUsedFormatted is string && data.storageUsedFormatted.size() <= 64))
+        && (!('storageRemainingFormatted' in data) || (data.storageRemainingFormatted is string && data.storageRemainingFormatted.size() <= 64))
+        && (!('fileCount' in data) || (data.fileCount is number && data.fileCount >= 0))
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 1024))
+        && (!('role' in data) || (data.role is string && data.role.size() <= 100));
+    }
+
+    function isValidFile(data, userId) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 500
+        && data.size is number && data.size >= 0
+        && data.type is string && data.type in ['image', 'video', 'document', 'audio', 'archive', 'code', 'other']
+        && data.userId is string && data.userId == userId && data.userId == request.auth.uid
+        && (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 128))
+        && (!('b2FileId' in data) || data.b2FileId == null || (data.b2FileId is string && data.b2FileId.size() <= 256))
+        && (!('b2FileName' in data) || data.b2FileName == null || (data.b2FileName is string && data.b2FileName.size() <= 500))
+        && (!('b2BucketName' in data) || data.b2BucketName == null || (data.b2BucketName is string && data.b2BucketName.size() <= 256))
+        && (!('thumbnailUrl' in data) || data.thumbnailUrl == null || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 2048))
+        && (!('url' in data) || (data.url is string && data.url.size() <= 2048))
+        && (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 256))
+        && (!('isFavorite' in data) || data.isFavorite is bool)
+        && (!('isDeleted' in data) || data.isDeleted is bool)
+        && (!('storedInB2' in data) || data.storedInB2 is bool);
+    }
+
+    // Users Collection: Private, isolated, each user can only read/write their own document
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false; // Blanket queries forbidden for user privacy / PII protection
+      
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && incoming().uid == request.auth.uid
+        && isValidUser(incoming());
+
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'avatarUrl', 'role', 'plan', 'maxStorageBytes', 'usedStorageBytes', 'storageUsed', 'storageRemaining', 'storageUsedFormatted', 'storageRemainingFormatted', 'fileCount', 'updatedAt'
+        ]);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // Subcollection: files uploaded by this user
+      match /files/{fileId} {
+        allow get: if isOwner(userId) && isValidId(fileId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId)
+          && isValidId(fileId)
+          && isValidFile(incoming(), userId);
+
+        allow update: if isOwner(userId)
+          && isValidId(fileId)
+          && isValidFile(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'type', 'isFavorite', 'isDeleted', 'thumbnailUrl', 'url', 'updatedAt', 'size', 'mimeType', 'b2FileId', 'b2FileName', 'b2BucketName', 'userEmail', 'storedInB2'
+          ]);
+
+        allow delete: if isOwner(userId) && isValidId(fileId);
+      }
+    }
+
+    // Separate Root Files Table: files data with names, ownership, and Backblaze B2 pointers
+    match /files/{fileId} {
+      allow get: if isSignedIn() && isValidId(fileId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn()
+        && isValidId(fileId)
+        && incoming().userId == request.auth.uid
+        && isValidFile(incoming(), request.auth.uid);
+
+      allow update: if isSignedIn()
+        && isValidId(fileId)
+        && existing().userId == request.auth.uid
+        && incoming().userId == existing().userId
+        && isValidFile(incoming(), request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'type', 'isFavorite', 'isDeleted', 'thumbnailUrl', 'url', 'updatedAt', 'size', 'mimeType', 'b2FileId', 'b2FileName', 'b2BucketName', 'userEmail', 'storedInB2'
+        ]);
+
+      allow delete: if isSignedIn()
+        && isValidId(fileId)
+        && existing().userId == request.auth.uid;
+    }
+  }
+}
