@@ -30,6 +30,26 @@ async function presignedPartUrl(env, key, uploadId, partNumber) {
   }
 }
 
+async function presignedReadUrl(env, key) {
+  const [{ S3Client }, { GetObjectCommand }, { getSignedUrl }] = await Promise.all([
+    import("@aws-sdk/client-s3"),
+    import("@aws-sdk/client-s3"),
+    import("@aws-sdk/s3-request-presigner"),
+  ]);
+  const config = b2Config(env);
+  const client = new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    credentials: { accessKeyId: config.keyId, secretAccessKey: config.secret },
+    forcePathStyle: true,
+  });
+  try {
+    return await getSignedUrl(client, new GetObjectCommand({ Bucket: config.bucket, Key: key }), { expiresIn: 3600 });
+  } finally {
+    client.destroy();
+  }
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -238,7 +258,8 @@ export async function onRequest(context) {
       if (!complete.ok) return json({ error: "Cloud storage could not finish this upload." }, 502);
       const b2FileId = completeText.match(/<ETag>([^<]+)<\/ETag>/)?.[1] || null;
       const id = `file_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
-      const file = { id, name: session.name, size: session.size, type: fileType(session.name, session.mimeType), mimeType: session.mimeType, userId: uid, uploadedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), isFavorite: false, isDeleted: false, storedInB2: true, b2BucketName: context.env.B2_BUCKET_NAME, b2FileId, b2FileName: session.key, url: `/api/files/${id}?userId=${encodeURIComponent(uid)}&b2FileName=${encodeURIComponent(session.key)}` };
+      const url = await presignedReadUrl(context.env, session.key);
+      const file = { id, name: session.name, size: session.size, type: fileType(session.name, session.mimeType), mimeType: session.mimeType, userId: uid, uploadedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), isFavorite: false, isDeleted: false, storedInB2: true, b2BucketName: context.env.B2_BUCKET_NAME, b2FileId, b2FileName: session.key, url, thumbnailUrl: fileType(session.name, session.mimeType) === "image" ? url : null };
       return json({ success: true, message: `Successfully uploaded ${session.name}`, file, files: [file] });
     }
     return json({ error: "Unknown upload action." }, 404);
