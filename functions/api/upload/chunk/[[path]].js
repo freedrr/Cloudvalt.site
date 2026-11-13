@@ -41,7 +41,7 @@ async function hmac(key, value) {
 }
 
 function awsEncode(value) {
-  return encodeURIComponent(String(value)).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%[0-9a-f]{2}/gi, match => match.toUpperCase());
 }
 
 function canonicalQuery(entries) {
@@ -103,12 +103,17 @@ async function presignedPartUrl(env, key, uploadId, partNumber) {
     ["partNumber", partNumber], ["uploadId", uploadId], ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
     ["X-Amz-Credential", `${config.keyId}/${scope}`], ["X-Amz-Date", amzDate], ["X-Amz-Expires", "3600"], ["X-Amz-SignedHeaders", "host"],
   ];
+  // The SDK signer used by the local server signs uploadId and partNumber as
+  // protocol query parameters, but leaves them outside the presigned auth
+  // query string. Keep the canonical ordering explicit for B2 compatibility.
   const canonicalUri = objectPath(config.bucket, key);
-  const query = canonicalQuery(queryEntries);
-  const canonicalRequest = ["PUT", canonicalUri, query, `host:${endpoint.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
+  const authEntries = queryEntries.filter(([name]) => name !== "partNumber" && name !== "uploadId");
+  const signedQuery = canonicalQuery(authEntries);
+  const canonicalQueryString = `${canonicalQuery([["partNumber", partNumber], ["uploadId", uploadId]])}&${signedQuery}`;
+  const canonicalRequest = ["PUT", canonicalUri, canonicalQueryString, `host:${endpoint.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
   const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, await sha256Hex(canonicalRequest)].join("\n");
   const signature = [...await hmac(await signingKey(config.secret, dateStamp, config.region), stringToSign)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  return `${config.endpoint}${canonicalUri}?${query}&X-Amz-Signature=${signature}`;
+  return `${config.endpoint}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
 }
 
 async function signedSession(env, payload) {
@@ -181,7 +186,9 @@ export async function onRequest(context) {
       if (!fileName || !Number.isSafeInteger(fileSize) || fileSize <= 0) return json({ error: "fileName and fileSize are required." }, 400);
       if (body.userId && body.userId !== uid) return json({ error: "Upload user does not match the signed-in account." }, 403);
       const chunkSize = Math.max(16 * 1024 * 1024, Math.ceil(fileSize / 10000 / (1024 * 1024)) * 1024 * 1024);
-      const safeName = fileName.replace(/[\\/:*?"<>|]/g, "_");
+      // Match the local server's object key convention; spaces and Unicode are
+      // normalized to underscores before SigV4 canonicalization.
+      const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
       const objectKey = `users/${uid}/${crypto.randomUUID()}_${safeName}`;
       const create = await b2Request(context.env, "POST", objectKey, [["uploads", ""]], "", { "content-type": body.mimeType || "application/octet-stream" });
       const createText = await create.text();
