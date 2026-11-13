@@ -151,14 +151,16 @@ async function signS3Request(env, method, queryEntries) {
   const scope = `${dateStamp}/${config.region}/s3/aws4_request`;
   const key = `${endpoint.pathname.replace(/\/$/, "")}/${awsEncode(env.B2_BUCKET_NAME)}`;
   const query = canonicalQuery(queryEntries);
-  const canonicalRequest = [method, key || "/", query, `host:${endpoint.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  const canonicalHeaders = `host:${endpoint.host}\nx-amz-content-sha256:UNSIGNED-PAYLOAD\nx-amz-date:${amzDate}\n`;
+  const canonicalRequest = [method, key || "/", query, canonicalHeaders, signedHeaders, "UNSIGNED-PAYLOAD"].join("\n");
   const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, await sha256Hex(canonicalRequest)].join("\n");
   const dateKey = await hmac(`AWS4${config.credentials.secretAccessKey}`, dateStamp);
   const regionKey = await hmac(dateKey, config.region);
   const serviceKey = await hmac(regionKey, "s3");
   const signingKey = await hmac(serviceKey, "aws4_request");
   const signature = [...await hmac(signingKey, stringToSign)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  const authorization = `AWS4-HMAC-SHA256 Credential=${config.credentials.accessKeyId}/${scope}, SignedHeaders=host, Signature=${signature}`;
+  const authorization = `AWS4-HMAC-SHA256 Credential=${config.credentials.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
   return { url: `${endpoint.origin}${key}?${query}`, headers: { host: endpoint.host, "x-amz-content-sha256": "UNSIGNED-PAYLOAD", "x-amz-date": amzDate, Authorization: authorization } };
 }
 
