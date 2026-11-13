@@ -1,0 +1,20 @@
+[
+  {
+    "corsRuleName": "cloudvalt-upload",
+    "allowedOrigins": [
+      "https://cloudvalt-site.pages.dev"
+    ],
+    "allowedOperations": [
+      "s3_put",
+      "s3_get",
+      "s3_head"
+    ],
+    "allowedHeaders": [
+      "*"
+    ],
+    "exposeHeaders": [
+      "ETag"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]
