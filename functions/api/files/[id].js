@@ -136,8 +136,15 @@ export async function onRequest(context) {
             await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
           }
         } catch (error) {
-          console.error("B2 permanent file deletion failed:", error instanceof Error ? error.message : error);
-          return json({ success: false, error: "Cloud storage could not confirm permanent deletion." }, 502);
+          const errorName = error?.name || error?.Code || "B2Error";
+          const errorMessage = error instanceof Error ? error.message : String(error || "Unknown B2 error");
+          const requestId = error?.$metadata?.requestId;
+          console.error("B2 permanent file deletion failed:", { name: errorName, message: errorMessage, requestId });
+          return json({
+            success: false,
+            error: `Cloud storage could not delete the file (${errorName}): ${errorMessage}`,
+            storageRequestId: requestId,
+          }, 502);
         } finally {
           client.destroy();
         }
