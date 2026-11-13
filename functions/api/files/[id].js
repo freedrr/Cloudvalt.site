@@ -120,23 +120,58 @@ function b2ClientConfig(env) {
   };
 }
 
+function awsEncode(value) {
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%[0-9a-f]{2}/gi, match => match.toUpperCase());
+}
+
+function canonicalQuery(entries) {
+  return [...entries]
+    .map(([key, value]) => [awsEncode(key), awsEncode(value)])
+    .sort(([aKey, aValue], [bKey, bValue]) => aKey === bKey ? aValue.localeCompare(bValue) : aKey.localeCompare(bKey))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+async function hmac(key, value) {
+  const cryptoKey = await crypto.subtle.importKey("raw", typeof key === "string" ? encoder.encode(key) : key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(value)));
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function signS3Request(env, method, queryEntries) {
+  const config = b2ClientConfig(env);
+  const endpoint = new URL(config.endpoint);
+  const date = new Date();
+  const amzDate = date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const dateStamp = amzDate.slice(0, 8);
+  const scope = `${dateStamp}/${config.region}/s3/aws4_request`;
+  const key = `${endpoint.pathname.replace(/\/$/, "")}/${awsEncode(env.B2_BUCKET_NAME)}`;
+  const query = canonicalQuery(queryEntries);
+  const canonicalRequest = [method, key || "/", query, `host:${endpoint.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, await sha256Hex(canonicalRequest)].join("\n");
+  const dateKey = await hmac(`AWS4${config.credentials.secretAccessKey}`, dateStamp);
+  const regionKey = await hmac(dateKey, config.region);
+  const serviceKey = await hmac(regionKey, "s3");
+  const signingKey = await hmac(serviceKey, "aws4_request");
+  const signature = [...await hmac(signingKey, stringToSign)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const authorization = `AWS4-HMAC-SHA256 Credential=${config.credentials.accessKeyId}/${scope}, SignedHeaders=host, Signature=${signature}`;
+  return { url: `${endpoint.origin}${key}?${query}`, headers: { host: endpoint.host, "x-amz-content-sha256": "UNSIGNED-PAYLOAD", "x-amz-date": amzDate, Authorization: authorization } };
+}
+
 async function deleteB2ObjectAndVersions(env, objectKey) {
   const config = b2ClientConfig(env);
   const { S3Client, DeleteObjectsCommand, DeleteObjectCommand, ListObjectVersionsCommand } = await import("@aws-sdk/client-s3");
   const client = new S3Client(config);
   try {
-    // Use the SDK's signed S3 request, but read its raw XML response because
-    // the SDK's default XML parser requires DOMParser, which Workers lack.
-    const listCommand = new ListObjectVersionsCommand({ Bucket: env.B2_BUCKET_NAME, Prefix: objectKey });
-    const request = await client.middlewareStack.resolve(
-      async (args) => ({ response: await client.config.requestHandler.handle(args.request), output: {} }),
-      client.middlewareStack.concat(listCommand.middlewareStack, "ListObjectVersionsCommand"),
-    )({ input: listCommand.input });
-    const rawResponse = request.response;
-    const rawXml = await new Response(rawResponse.body).text();
-    if (rawResponse.statusCode < 200 || rawResponse.statusCode >= 300) {
-      throw new Error(`B2 list versions returned HTTP ${rawResponse.statusCode}.`);
-    }
+    const listQuery = [["versions", ""], ["prefix", objectKey]];
+    const signedList = await signS3Request(env, "GET", listQuery);
+    const listed = await fetch(signedList.url, { headers: signedList.headers });
+    const rawXml = await listed.text();
+    if (!listed.ok) throw new Error(`B2 list versions returned HTTP ${listed.status}: ${rawXml.match(/<Message>([^<]*)<\/Message>/)?.[1] || "request rejected"}`);
     const versions = parseObjectVersions(rawXml, objectKey);
     if (versions.length) {
       await client.send(new DeleteObjectsCommand({ Bucket: env.B2_BUCKET_NAME, Delete: { Objects: versions, Quiet: false } }));
