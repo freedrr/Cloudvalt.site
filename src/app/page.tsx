@@ -590,17 +590,19 @@ export default function CloudvaltApp() {
     });
 
     const initData = await initRes.json().catch(() => ({}));
-    if (!initRes.ok || !initData.uploadId) {
+    if (!initRes.ok || !initData.uploadId || !initData.uploadToken) {
       return { ok: false, status: initRes.status, data: initData };
     }
 
     const uploadId = initData.uploadId;
+    const uploadToken = initData.uploadToken;
     CHUNK_SIZE = Number(initData.chunkSize) || CHUNK_SIZE;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     // Each part is sent directly from the browser to B2. The app server only
     // signs each temporary URL and records B2's confirmation.
     onPhase("uploading");
     const loadedByChunk = new Map<number, number>();
+    const completedPartEtags = new Map<number, string>();
     let nextChunkIndex = 0;
     let uploadError: { status: number; data: any } | null = null;
     const uploadChunk = async (chunkIndex: number): Promise<void> => {
@@ -611,7 +613,7 @@ export default function CloudvaltApp() {
       const signedPart = await fetch("/api/upload/chunk/url", {
         method: "POST",
         headers,
-        body: JSON.stringify({ uploadId, chunkIndex }),
+        body: JSON.stringify({ uploadId, uploadToken, chunkIndex }),
       });
       const signedPartData = await signedPart.json().catch(() => ({}));
       if (!signedPart.ok || !signedPartData.uploadUrl) {
@@ -641,10 +643,11 @@ export default function CloudvaltApp() {
         fetch("/api/upload/chunk/part-complete", {
           method: "POST",
           headers,
-          body: JSON.stringify({ uploadId, chunkIndex, eTag }),
+          body: JSON.stringify({ uploadId, uploadToken, chunkIndex, eTag }),
         }).then(async (confirmation) => {
           const data = await confirmation.json().catch(() => ({}));
           if (!confirmation.ok) throw new Error(data.error || "Could not confirm the uploaded part.");
+          completedPartEtags.set(chunkIndex, eTag);
           loadedByChunk.set(chunkIndex, end - start);
           const loaded = Array.from(loadedByChunk.values()).reduce((sum, amount) => sum + amount, 0);
           onProgress(Math.min(file.size, loaded), file.size);
@@ -685,6 +688,11 @@ export default function CloudvaltApp() {
         mimeType: file.type || "application/octet-stream",
         userId,
         totalChunks,
+        uploadToken,
+        parts: Array.from(completedPartEtags.entries()).map(([chunkIndex, ETag]) => ({
+          PartNumber: chunkIndex + 1,
+          ETag,
+        })),
       }),
     }).finally(() => { completionReturned = true; });
 
