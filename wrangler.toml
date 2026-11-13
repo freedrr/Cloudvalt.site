@@ -1,3 +1,9 @@
 name = "cloudvalt-site"
 compatibility_date = "2025-05-01"
 pages_build_output_dir = "./dist"
+
+[vars]
+B2_BUCKET_NAME = "cloudvalt-storage"
+B2_REGION = "us-east-005"
+B2_ENDPOINT = "https://s3.us-east-005.backblazeb2.com"
+FIREBASE_PROJECT_ID = "strange-bird-467010-q9"
