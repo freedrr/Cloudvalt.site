@@ -166,20 +166,13 @@ async function signS3Request(env, method, queryEntries) {
 
 async function deleteB2ObjectAndVersions(env, objectKey) {
   const config = b2ClientConfig(env);
-  const { S3Client, DeleteObjectsCommand, DeleteObjectCommand, ListObjectVersionsCommand } = await import("@aws-sdk/client-s3");
+  const { S3Client, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
   const client = new S3Client(config);
   try {
-    const listQuery = [["versions", ""], ["prefix", objectKey]];
-    const signedList = await signS3Request(env, "GET", listQuery);
-    const listed = await fetch(signedList.url, { headers: signedList.headers });
-    const rawXml = await listed.text();
-    if (!listed.ok) throw new Error(`B2 list versions returned HTTP ${listed.status}: ${rawXml.match(/<Message>([^<]*)<\/Message>/)?.[1] || "request rejected"}`);
-    const versions = parseObjectVersions(rawXml, objectKey);
-    if (versions.length) {
-      await client.send(new DeleteObjectsCommand({ Bucket: env.B2_BUCKET_NAME, Delete: { Objects: versions, Quiet: false } }));
-    } else {
-      await client.send(new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: objectKey }));
-    }
+    // B2 S3 DeleteObject removes the current version by creating a marker in
+    // versioned buckets. For non-versioned buckets it permanently removes the
+    // object. Avoid XML listing here because Workers lack DOMParser.
+    await client.send(new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: objectKey }));
   } finally {
     client.destroy();
   }
