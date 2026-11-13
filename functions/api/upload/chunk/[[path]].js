@@ -186,7 +186,17 @@ export async function onRequest(context) {
       const create = await b2Request(context.env, "POST", objectKey, [["uploads", ""]], "", { "content-type": body.mimeType || "application/octet-stream" });
       const createText = await create.text();
       const uploadId = createText.match(/<UploadId>([^<]+)<\/UploadId>/)?.[1];
-      if (!create.ok || !uploadId) return json({ error: "Cloud storage could not start this upload." }, 502);
+      if (!create.ok || !uploadId) {
+        const b2Message = createText.match(/<Message>([^<]+)<\/Message>/)?.[1];
+        const b2Code = createText.match(/<Code>([^<]+)<\/Code>/)?.[1];
+        console.error("B2 multipart initialization failed", { status: create.status, code: b2Code || null, message: b2Message || createText.slice(0, 500) });
+        return json({
+          error: `Cloud storage could not start this upload (B2 ${create.status}${b2Code ? `: ${b2Code}` : ""}).`,
+          storageStatus: create.status,
+          storageCode: b2Code || undefined,
+          storageMessage: b2Message || undefined,
+        }, 502);
+      }
       const uploadToken = await signedSession(context.env, { uid, uploadId, key: objectKey, size: fileSize, chunkSize, name: fileName, mimeType: body.mimeType || "application/octet-stream", expires: Date.now() + 2 * 60 * 60 * 1000 });
       return json({ success: true, uploadId, uploadToken, chunkSize });
     }
