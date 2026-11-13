@@ -104,6 +104,14 @@ function getVideoPosterUrl(file: CloudFile): string | undefined {
   return file.thumbnailUrl;
 }
 
+function filePreviewUrl(file: CloudFile): string {
+  if (file.storedInB2 && file.b2FileName && file.userId) {
+    const params = new URLSearchParams({ userId: file.userId, b2FileName: file.b2FileName });
+    return `/api/files/${encodeURIComponent(file.id)}?${params.toString()}`;
+  }
+  return file.previewUrl || file.url || `/api/files/${encodeURIComponent(file.id)}`;
+}
+
 // Get Auth Headers with Firebase ID Token
 async function getAuthHeaders() {
   const token = await auth.currentUser?.getIdToken();
@@ -160,6 +168,7 @@ export default function CloudvaltApp() {
 
   // Modals state
   const [previewFile, setPreviewFile] = useState<CloudFile | null>(null);
+  const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<CloudFile | null>(null);
   const [newNameInput, setNewNameInput] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<CloudFile | null>(null);
@@ -1359,7 +1368,7 @@ export default function CloudvaltApp() {
       return (
         <div className="absolute inset-0 w-full h-full overflow-hidden bg-zinc-950 flex items-center justify-center">
           <img
-            src={file.thumbnailUrl || file.contentBase64 || file.url || `/api/files/${file.id}`}
+            src={file.contentBase64 || filePreviewUrl(file)}
             alt={file.name}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 z-10"
             onError={(e) => {
@@ -1399,7 +1408,7 @@ export default function CloudvaltApp() {
             />
           ) : (
             <video
-              src={`${file.url || `/api/files/${file.id}`}#t=0.5`}
+              src={`${filePreviewUrl(file)}#t=0.5`}
               className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 z-20"
               muted
               preload="metadata"
@@ -1540,7 +1549,7 @@ export default function CloudvaltApp() {
     if (effectiveType === "image" || videoPoster || (effectiveType !== "video" && (file.thumbnailUrl || file.contentBase64))) {
       return (
         <img
-          src={videoPoster || file.thumbnailUrl || file.contentBase64 || file.url || `/api/files/${file.id}`}
+          src={file.contentBase64 || videoPoster || filePreviewUrl(file)}
           alt={file.name}
           className="h-full w-full object-cover"
           onError={(e) => {
@@ -1554,7 +1563,7 @@ export default function CloudvaltApp() {
       return (
         <div className="relative h-full w-full bg-black flex items-center justify-center">
           <video
-            src={`${file.url || `/api/files/${file.id}`}#t=0.5`}
+            src={`${filePreviewUrl(file)}#t=0.5`}
             className="h-full w-full object-cover"
             muted
             preload="metadata"
@@ -2778,7 +2787,7 @@ export default function CloudvaltApp() {
                       controls
                       autoPlay
                       playsInline
-                      src={previewFile.previewUrl || previewFile.url || `/api/files/${previewFile.id}`}
+                      src={filePreviewUrl(previewFile)}
                       poster={getVideoPosterUrl(previewFile)}
                       className="max-h-full max-w-full rounded-xl"
                     >
@@ -2786,14 +2795,14 @@ export default function CloudvaltApp() {
                     </video>
                   ) : previewFile.type === "image" ? (
                     <img
-                      src={previewFile.thumbnailUrl || previewFile.contentBase64 || previewFile.url || `/api/files/${previewFile.id}`}
+                      src={previewFile.contentBase64 || filePreviewUrl(previewFile)}
                       alt={previewFile.name}
                       className="max-h-full max-w-full object-contain rounded-xl"
                     />
                   ) : previewFile.type === "audio" ? (
                     <div className="p-8 text-center w-full">
                       <Music className="h-16 w-16 text-zinc-400 mx-auto mb-4" />
-                      <audio controls className="w-full max-w-md mx-auto" src={previewFile.url || `/api/files/${previewFile.id}`} />
+                      <audio controls className="w-full max-w-md mx-auto" src={filePreviewUrl(previewFile)} />
                     </div>
                   ) : previewFile.type === "archive" ? (
                     <div className="text-center p-8 text-zinc-400">

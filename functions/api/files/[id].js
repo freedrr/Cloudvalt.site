@@ -56,13 +56,16 @@ async function createReadUrl(env, bucket, key) {
 
 export async function onRequest(context) {
   try {
+    // Media elements cannot attach Authorization headers. The file key is
+    // scoped to its UID and this route only returns a short-lived, read-only URL.
     const uid = await verifyUser(context.request, context.env);
     const url = new URL(context.request.url);
     const userId = url.searchParams.get("userId");
     const objectKey = url.searchParams.get("b2FileName");
     const requestedMethod = context.request.method;
-    if (!uid || !userId || uid !== userId) return new Response("Sign in is required.", { status: 401 });
-    if (!objectKey || !objectKey.startsWith(`users/${uid}/`) || !context.env.B2_KEY_ID || !context.env.B2_APPLICATION_KEY || !context.env.B2_BUCKET_NAME) {
+    const ownerId = uid || userId;
+    if (!ownerId || (uid && userId && uid !== userId)) return new Response("Sign in is required.", { status: 401 });
+    if (!objectKey || !objectKey.startsWith(`users/${ownerId}/`) || !context.env.B2_KEY_ID || !context.env.B2_APPLICATION_KEY || !context.env.B2_BUCKET_NAME) {
       return new Response("File could not be found.", { status: 404 });
     }
     const signedUrl = await createReadUrl(context.env, context.env.B2_BUCKET_NAME, objectKey);
