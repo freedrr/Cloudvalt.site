@@ -17,6 +17,7 @@ import {
   updateDoc,
   deleteDoc,
   collection,
+  addDoc,
   query,
   where,
   orderBy,
@@ -33,6 +34,28 @@ import { calculateStorage, formatExactBytes } from "./storageCalc";
 export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+export async function saveUserFeedback(
+  userId: string,
+  userEmail: string | undefined,
+  rating: number,
+  message: string
+): Promise<void> {
+  const cleanMessage = message.trim();
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    throw new Error("Please choose a rating from 1 to 5.");
+  }
+  if (!cleanMessage || cleanMessage.length > 2000) {
+    throw new Error("Feedback must be between 1 and 2,000 characters.");
+  }
+  await addDoc(collection(db, "users", userId, "feedback"), {
+    userId,
+    userEmail: userEmail || null,
+    rating,
+    message: cleanMessage,
+    createdAt: new Date().toISOString(),
+  });
+}
 
 // Google Auth Provider
 export const googleProvider = new GoogleAuthProvider();
@@ -200,6 +223,17 @@ export async function updateUserStoragePlan(
   }
 }
 
+export async function getUserStoragePlanLimit(userId: string): Promise<number | null> {
+  try {
+    const snapshot = await getDoc(doc(db, "users", userId));
+    if (!snapshot.exists()) return null;
+    const limit = Number(snapshot.data().maxStorageBytes);
+    return Number.isFinite(limit) && limit > 0 ? limit : null;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, userDocPath(userId));
+  }
+}
+
 
 // Sync user total storage and file count to user document
 export async function syncUserStorageStats(
@@ -228,9 +262,9 @@ export async function syncUserStorageStats(
     snap.forEach((d) => {
       const data = d.data();
 
-      if (!data.isDeleted) {
+      if (!data.isFolder) {
         storageUsed += Number(data.size) || 0;
-        fileCount += 1;
+        if (!data.isDeleted) fileCount += 1;
       }
     });
 
@@ -294,12 +328,14 @@ export async function saveUserFileToFirestore(
   userEmail: string,
   file: CloudFile
 ): Promise<CloudFile> {
+  if (file.isFolder) {
+    return saveUserFolderToFirestore(userId, userEmail, file);
+  }
   const fileId = file.id;
   const path = `users/${userId}/files/${fileId}`;
   const now = new Date().toISOString();
 
-  const b2FileName =
-    file.b2FileName || `users/${userId}/${fileId}_${file.name}`;
+  const b2FileName = file.b2FileName || null;
 
   const computedType = file.type && file.type !== "other" ? file.type : detectFileType(file.name, file.mimeType);
 
@@ -314,11 +350,14 @@ export async function saveUserFileToFirestore(
     b2FileName: b2FileName,
 
     b2BucketName: file.b2BucketName || "",
+    folderId: file.folderId || null,
+    isFolder: false,
 
     uploadedAt: file.uploadedAt || now,
 
     // Only save a real thumbnail URL, never Base64 image data.
-    thumbnailUrl: file.thumbnailUrl || null,
+    // Firestore metadata must contain a real URL, never a large Base64 image/video thumbnail.
+    thumbnailUrl: file.thumbnailUrl?.startsWith("data:") ? null : file.thumbnailUrl || null,
 
     userId: userId,
     userEmail: userEmail,
@@ -327,6 +366,7 @@ export async function saveUserFileToFirestore(
 
     isFavorite: Boolean(file.isFavorite),
     isDeleted: Boolean(file.isDeleted),
+    ...(file.deletedAt ? { deletedAt: file.deletedAt } : {}),
 
     updatedAt: now,
 
@@ -357,13 +397,40 @@ export async function saveUserFileToFirestore(
   }
 }
 
+export async function saveUserFolderToFirestore(
+  userId: string,
+  userEmail: string,
+  folder: CloudFile
+): Promise<CloudFile> {
+  const now = new Date().toISOString();
+  const folderData = {
+    id: folder.id,
+    name: folder.name,
+    parentFolderId: folder.folderId || null,
+    size: 0,
+    userId,
+    userEmail,
+    uploadedAt: folder.uploadedAt || now,
+    updatedAt: now,
+  };
+  const userFolderRef = doc(db, "users", userId, "folders", folder.id);
+  try {
+    await setDoc(userFolderRef, folderData);
+    const savedFolder = await getDoc(userFolderRef);
+    if (!savedFolder.exists()) throw new Error("Folder save was not confirmed in Firestore.");
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, `users/${userId}/folders/${folder.id}`);
+  }
+  return { ...folder, ...folderData, isFolder: true, type: "other", mimeType: "application/x-directory" };
+}
+
 // Get user files ordered by uploadedAt descending
 export async function getUserFilesFromFirestore(
   userId: string,
   category: FileCategory = "home",
   searchQuery: string = "",
   maxBytes: number = 100 * 1024 * 1024
-): Promise<{ files: CloudFile[]; stats: StorageStats }> {
+): Promise<{ files: CloudFile[]; stats: StorageStats; expiredTrash: CloudFile[] }> {
   const path = `users/${userId}/files`;
 
   try {
@@ -375,6 +442,25 @@ export async function getUserFilesFromFirestore(
 
     snap.forEach((docSnap) => {
       const data = docSnap.data();
+      // Legacy folders were stored beside file metadata. Continue recognizing
+      // them until the user migrates or removes those old records.
+      if (data.isFolder) {
+        allFiles.push({
+          id: docSnap.id,
+          name: data.name || "Untitled folder",
+          size: Number(data.size) || 0,
+          type: "other",
+          mimeType: "application/x-directory",
+          folderId: data.folderId || null,
+          isFolder: true,
+          uploadedAt: data.uploadedAt || new Date().toISOString(),
+          updatedAt: data.updatedAt || new Date().toISOString(),
+          isFavorite: false,
+          userId: data.userId || userId,
+          userEmail: data.userEmail,
+        });
+        return;
+      }
       const name = data.name || "Untitled";
       const mimeType = data.mimeType || "application/octet-stream";
       const detected = detectFileType(name, mimeType);
@@ -388,6 +474,8 @@ export async function getUserFilesFromFirestore(
         mimeType: mimeType,
         b2FileId: data.b2FileId || undefined,
         b2FileName: data.b2FileName || undefined,
+        folderId: data.parentFolderId ?? data.folderId ?? null,
+        isFolder: Boolean(data.isFolder),
         uploadedAt: data.uploadedAt || new Date().toISOString(),
         updatedAt: data.updatedAt || new Date().toISOString(),
         thumbnailUrl: data.thumbnailUrl || null,
@@ -396,12 +484,49 @@ export async function getUserFilesFromFirestore(
         url: data.url || `/api/files/${docSnap.id}`,
         isFavorite: Boolean(data.isFavorite),
         isDeleted: Boolean(data.isDeleted),
+        deletedAt: data.deletedAt || (data.isDeleted ? data.updatedAt : null),
       });
     });
 
-    const activeFiles = allFiles.filter((f) => !f.isDeleted);
+    const foldersSnap = await getDocs(collection(db, "users", userId, "folders"));
+    foldersSnap.forEach((folderSnap) => {
+      const data = folderSnap.data();
+      allFiles.push({
+        id: folderSnap.id,
+        name: data.name || "Untitled folder",
+        size: Number(data.size) || 0,
+        type: "other",
+        mimeType: "application/x-directory",
+        folderId: data.parentFolderId ?? data.folderId ?? null,
+        isFolder: true,
+        uploadedAt: data.uploadedAt || new Date().toISOString(),
+        updatedAt: data.updatedAt || new Date().toISOString(),
+        isFavorite: false,
+        userId: data.userId || userId,
+        userEmail: data.userEmail,
+      });
+    });
 
-    let storageUsed = 0;
+    const folders = allFiles.filter((entry) => entry.isFolder);
+    const fileRecords = allFiles.filter((entry) => !entry.isFolder);
+    const folderSizes = new Map<string, number>();
+    for (const folder of folders) folderSizes.set(folder.id, 0);
+    for (const file of fileRecords) {
+      if (!file.folderId) continue;
+      let parentId: string | null | undefined = file.folderId;
+      const visited = new Set<string>();
+      while (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        if (!folderSizes.has(parentId)) break;
+        folderSizes.set(parentId, (folderSizes.get(parentId) || 0) + file.size);
+        parentId = folders.find((entry) => entry.id === parentId)?.folderId;
+      }
+    }
+    for (const folder of folders) folder.size = folderSizes.get(folder.id) || 0;
+
+    const activeFiles = allFiles.filter((f) => !f.isDeleted && !f.isFolder);
+
+    const storageUsed = fileRecords.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
     let favoriteCount = 0;
 
     const categoryBreakdown: Record<
@@ -418,8 +543,6 @@ export async function getUserFilesFromFirestore(
     };
 
     for (const file of activeFiles) {
-      storageUsed += file.size;
-
       if (file.isFavorite) favoriteCount++;
 
       const fType = file.type && categoryBreakdown[file.type] ? file.type : "other";
@@ -435,9 +558,15 @@ export async function getUserFilesFromFirestore(
       favoriteCount,
     };
 
-    let filtered = allFiles.filter((f) => !f.isDeleted);
+    let filtered = category === "trash"
+      ? allFiles.filter((f) => f.isDeleted && !f.isFolder)
+      : allFiles.filter((f) => !f.isDeleted);
 
-    if (category === "photos") {
+    if (category === "folders") {
+      filtered = filtered.filter((f) => f.isFolder);
+    } else if (category === "apps") {
+      filtered = filtered.filter((f) => !f.isFolder && /\.(exe|msi|app|dmg|pkg|deb|rpm|apk|aab|ipa|bat|cmd|appx|msix)$/i.test(f.name));
+    } else if (category === "photos") {
       filtered = filtered.filter((f) => f.type === "image" || detectFileType(f.name, f.mimeType) === "image");
     } else if (category === "videos") {
       filtered = filtered.filter((f) => f.type === "video" || detectFileType(f.name, f.mimeType) === "video");
@@ -457,6 +586,10 @@ export async function getUserFilesFromFirestore(
       filtered = filtered.filter((f) => f.isFavorite);
     }
 
+    if (category !== "folders" && category !== "trash") {
+      filtered = filtered.filter((f) => !f.isFolder);
+    }
+
     if (searchQuery.trim()) {
       const qLower = searchQuery.toLowerCase();
 
@@ -465,7 +598,13 @@ export async function getUserFilesFromFirestore(
       );
     }
 
-    return { files: filtered, stats };
+    const trashRetentionMs = 30 * 24 * 60 * 60 * 1000;
+    const expiredTrash = allFiles.filter((file) =>
+      !file.isFolder && file.isDeleted && file.deletedAt &&
+      Date.now() - new Date(file.deletedAt).getTime() >= trashRetentionMs
+    );
+
+    return { files: filtered, stats, expiredTrash };
 
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, path);
@@ -500,12 +639,57 @@ export async function deleteUserFileInFirestore(
     const userFileRef = doc(db, "users", userId, "files", fileId);
     const rootFileRef = doc(db, "files", fileId);
 
-    // Direct permanent deletion (Trash removed)
-    await deleteDoc(userFileRef);
-    await deleteDoc(rootFileRef).catch(() => {});
+    if (permanent) {
+      await Promise.all([deleteDoc(userFileRef), deleteDoc(rootFileRef)]);
+    } else {
+      const deletedAt = new Date().toISOString();
+      // Reuse updatedAt as the Trash timestamp. This stays compatible with
+      // already-published rules that allow isDeleted and updatedAt updates.
+      const updateData = { isDeleted: true, updatedAt: deletedAt };
+      await updateDoc(userFileRef, updateData);
+      await updateDoc(rootFileRef, updateData).catch(() => {});
+    }
 
     await syncUserStorageStats(userId);
 
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+export async function deleteUserFolderInFirestore(
+  userId: string,
+  folderId: string,
+  parentFolderId: string | null
+): Promise<void> {
+  const path = `users/${userId}/folders/${folderId}`;
+  try {
+    const [filesSnapshot, foldersSnapshot] = await Promise.all([
+      getDocs(collection(db, "users", userId, "files")),
+      getDocs(collection(db, "users", userId, "folders")),
+    ]);
+    const childFiles = filesSnapshot.docs.filter((entry) => entry.data().folderId === folderId);
+    const childFolders = foldersSnapshot.docs.filter((entry) => (entry.data().parentFolderId ?? entry.data().folderId) === folderId);
+    await Promise.all([
+      ...childFiles.map(async (entry) => {
+        const userRef = doc(db, "users", userId, "files", entry.id);
+        const rootRef = doc(db, "files", entry.id);
+        const root = await getDoc(rootRef);
+        const writes: Promise<void>[] = [updateDoc(userRef, { folderId: parentFolderId, updatedAt: new Date().toISOString() })];
+        if (root.exists()) writes.push(updateDoc(rootRef, { folderId: parentFolderId, updatedAt: new Date().toISOString() }));
+        await Promise.all(writes);
+      }),
+      ...childFolders.map((entry) => updateDoc(doc(db, "users", userId, "folders", entry.id), {
+        parentFolderId,
+        updatedAt: new Date().toISOString(),
+      })),
+    ]);
+    await deleteDoc(doc(db, "users", userId, "folders", folderId));
+    // Clean up legacy folder metadata without touching the root file index.
+    const legacyRef = doc(db, "users", userId, "files", folderId);
+    const legacy = await getDoc(legacyRef);
+    if (legacy.exists() && legacy.data().isFolder) await deleteDoc(legacyRef);
+    await syncUserStorageStats(userId);
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
   }

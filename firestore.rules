@@ -53,12 +53,18 @@ service cloud.firestore {
         && (!('b2FileId' in data) || data.b2FileId == null || (data.b2FileId is string && data.b2FileId.size() <= 256))
         && (!('b2FileName' in data) || data.b2FileName == null || (data.b2FileName is string && data.b2FileName.size() <= 500))
         && (!('b2BucketName' in data) || data.b2BucketName == null || (data.b2BucketName is string && data.b2BucketName.size() <= 256))
-        && (!('thumbnailUrl' in data) || data.thumbnailUrl == null || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 2048))
+        // Video thumbnail data URLs are generated in the browser and can be
+        // larger than a normal URL. Cap the stored field to avoid Firestore
+        // document size abuse while allowing generated preview images.
+        && (!('thumbnailUrl' in data) || data.thumbnailUrl == null || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 300000))
         && (!('url' in data) || (data.url is string && data.url.size() <= 2048))
         && (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 256))
         && (!('isFavorite' in data) || data.isFavorite is bool)
         && (!('isDeleted' in data) || data.isDeleted is bool)
-        && (!('storedInB2' in data) || data.storedInB2 is bool);
+        && (!('deletedAt' in data) || data.deletedAt == null || (data.deletedAt is string && data.deletedAt.size() <= 40))
+        && (!('storedInB2' in data) || data.storedInB2 is bool)
+        && (!('folderId' in data) || data.folderId == null || (data.folderId is string && data.folderId.size() <= 128))
+        && (!('isFolder' in data) || data.isFolder is bool);
     }
 
     // Users Collection: Private, isolated, each user can only read/write their own document
@@ -96,10 +102,52 @@ service cloud.firestore {
           && isValidFile(incoming(), userId)
           && incoming().userId == existing().userId
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'type', 'isFavorite', 'isDeleted', 'thumbnailUrl', 'url', 'updatedAt', 'size', 'mimeType', 'b2FileId', 'b2FileName', 'b2BucketName', 'userEmail', 'storedInB2'
+            'name', 'type', 'isFavorite', 'isDeleted', 'deletedAt', 'thumbnailUrl', 'url', 'updatedAt', 'size', 'mimeType', 'b2FileId', 'b2FileName', 'b2BucketName', 'userEmail', 'storedInB2', 'folderId'
           ]);
 
         allow delete: if isOwner(userId) && isValidId(fileId);
+      }
+
+      // Folder metadata is kept separately from uploaded file metadata.
+      match /folders/{folderId} {
+        allow get: if isOwner(userId) && isValidId(folderId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(folderId)
+          && incoming().id == folderId
+          && incoming().userId == userId
+          && incoming().name is string
+          && incoming().name.size() > 0
+          && incoming().name.size() <= 120
+          && incoming().size is number
+          && incoming().size >= 0
+          && (!('parentFolderId' in incoming()) || incoming().parentFolderId == null || (incoming().parentFolderId is string && incoming().parentFolderId.size() <= 128));
+        allow update: if isOwner(userId)
+          && isValidId(folderId)
+          && incoming().id == folderId
+          && incoming().userId == existing().userId
+          && incoming().name is string
+          && incoming().name.size() > 0
+          && incoming().name.size() <= 120
+          && incoming().size is number
+          && incoming().size >= 0
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'parentFolderId', 'size', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(folderId);
+      }
+
+      // Feedback belongs to the sender. Users can submit feedback but cannot
+      // read other users' messages or alter a submitted rating.
+      match /feedback/{feedbackId} {
+        allow create: if isOwner(userId)
+          && incoming().keys().hasOnly(['userId', 'userEmail', 'rating', 'message', 'createdAt'])
+          && incoming().userId == userId
+          && incoming().rating is int
+          && incoming().rating >= 1 && incoming().rating <= 5
+          && incoming().message is string
+          && incoming().message.size() > 0 && incoming().message.size() <= 2000
+          && incoming().createdAt is string && incoming().createdAt.size() <= 40
+          && (!('userEmail' in incoming()) || incoming().userEmail == null || (incoming().userEmail is string && incoming().userEmail.size() <= 256));
+        allow read, update, delete: if false;
       }
     }
 
@@ -119,7 +167,7 @@ service cloud.firestore {
         && incoming().userId == existing().userId
         && isValidFile(incoming(), request.auth.uid)
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'name', 'type', 'isFavorite', 'isDeleted', 'thumbnailUrl', 'url', 'updatedAt', 'size', 'mimeType', 'b2FileId', 'b2FileName', 'b2BucketName', 'userEmail', 'storedInB2'
+          'name', 'type', 'isFavorite', 'isDeleted', 'deletedAt', 'thumbnailUrl', 'url', 'updatedAt', 'size', 'mimeType', 'b2FileId', 'b2FileName', 'b2BucketName', 'userEmail', 'storedInB2', 'folderId'
         ]);
 
       allow delete: if isSignedIn()

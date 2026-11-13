@@ -3,6 +3,8 @@ export interface User {
   name: string;
   email: string;
   avatar?: string;
+  avatarFallback?: string;
+  avatarFailed?: boolean;
   role: string;
   plan: string;
   planId: '100mb' | '50gb' | '250gb' | '1tb';
@@ -25,7 +27,7 @@ export function getStoredUser(): User | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     // Backward compatibility check for old 2gb plan
-    if (parsed.plan?.includes("2 GB") || !parsed.maxStorageBytes || parsed.maxStorageBytes === 50 * 1024 * 1024 * 1024) {
+    if (parsed.plan?.includes("2 GB") || !parsed.maxStorageBytes) {
       parsed.plan = "100 MB Free (Test Mode)";
       parsed.planId = "100mb";
       parsed.maxStorageBytes = 100 * 1024 * 1024;

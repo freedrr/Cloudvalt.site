@@ -40,6 +40,23 @@ export function detectFileType(fileName: string, mimeType: string = ''): FileTyp
   return 'other';
 }
 
+export function resolveMimeType(fileName: string, mimeType: string = ''): string {
+  if (mimeType && mimeType !== 'application/octet-stream') return mimeType;
+
+  const extension = path.extname(fileName).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.avif': 'image/avif', '.bmp': 'image/bmp', '.gif': 'image/gif',
+    '.heic': 'image/heic', '.heif': 'image/heif', '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml',
+    '.webp': 'image/webp', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska',
+    '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.ogv': 'video/ogg',
+    '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4',
+    '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.pdf': 'application/pdf',
+  };
+
+  return mimeTypes[extension] || mimeType || 'application/octet-stream';
+}
+
 function getInitialDemoFiles(): CloudFile[] {
   return [];
 }
@@ -78,12 +95,9 @@ export const serverStorage = {
   getAllFiles(includeDeleted = false, userId?: string): CloudFile[] {
     const all = readManifest();
     return all.filter((f) => {
-      const matchesDeleted = includeDeleted ? f.isDeleted : !f.isDeleted;
+      const matchesDeleted = includeDeleted || !f.isDeleted;
       if (!matchesDeleted) return false;
-      if (userId && userId !== 'default_user') {
-        return f.userId === userId || !f.userId;
-      }
-      return true;
+      return userId ? (f.userId || 'default_user') === userId : false;
     });
   },
 
@@ -112,6 +126,7 @@ export const serverStorage = {
     mimeType: string,
     extra?: Partial<CloudFile>
   ): Promise<CloudFile> {
+    mimeType = resolveMimeType(name, mimeType);
     const id = `file_${Date.now()}_${uuidv4().substring(0, 6)}`;
     const diskPath = path.join(FILES_DIR, id);
     fs.writeFileSync(diskPath, buffer);
@@ -158,6 +173,7 @@ export const serverStorage = {
     mimeType: string,
     extra?: Partial<CloudFile>
   ): Promise<CloudFile> {
+    mimeType = resolveMimeType(name, mimeType);
     const id = `file_${Date.now()}_${uuidv4().substring(0, 6)}`;
     const diskPath = path.join(FILES_DIR, id);
 
@@ -208,18 +224,49 @@ export const serverStorage = {
     return newFile;
   },
 
-  deleteFile(id: string, permanent = true): boolean {
+  saveRemoteFileMetadata(
+    name: string,
+    fileSize: number,
+    mimeType: string,
+    extra: Partial<CloudFile>
+  ): CloudFile {
+    const resolvedMimeType = resolveMimeType(name, mimeType);
+    const now = new Date().toISOString();
+    const id = `file_${Date.now()}_${uuidv4().substring(0, 6)}`;
+    const newFile: CloudFile = {
+      id,
+      name,
+      size: fileSize,
+      type: detectFileType(name, resolvedMimeType),
+      mimeType: resolvedMimeType,
+      uploadedAt: now,
+      updatedAt: now,
+      isFavorite: false,
+      isDeleted: false,
+      url: `/api/files/${id}`,
+      ...extra,
+    };
+    const all = readManifest();
+    all.unshift(newFile);
+    writeManifest(all);
+    return newFile;
+  },
+
+  deleteFile(id: string, permanent = false): boolean {
     const all = readManifest();
     const idx = all.findIndex((f) => f.id === id);
     if (idx === -1) return false;
 
-    // Direct permanent deletion (Trash removed)
-    all.splice(idx, 1);
-    const filePath = path.join(FILES_DIR, id);
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.unlinkSync(filePath);
-      } catch {}
+    if (!permanent) {
+      all[idx].isDeleted = true;
+      all[idx].deletedAt = new Date().toISOString();
+      all[idx].updatedAt = all[idx].deletedAt;
+    } else {
+      all.splice(idx, 1);
+      const filePath = path.join(FILES_DIR, id);
+      if (fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath); } catch {}
+      }
     }
 
     writeManifest(all);
@@ -231,6 +278,7 @@ export const serverStorage = {
     const file = all.find((f) => f.id === id);
     if (file) {
       file.isDeleted = false;
+      file.deletedAt = null;
       file.updatedAt = new Date().toISOString();
       writeManifest(all);
       return true;
@@ -251,6 +299,69 @@ export const serverStorage = {
     return null;
   },
 
+  moveFileToFolder(id: string, folderId: string | null): CloudFile | null {
+    const all = readManifest();
+    const file = all.find((entry) => entry.id === id);
+    if (!file) return null;
+    file.folderId = folderId;
+    file.updatedAt = new Date().toISOString();
+    writeManifest(all);
+    return file;
+  },
+
+  deleteFolder(id: string, userId: string): CloudFile | null {
+    const all = readManifest();
+    const folder = all.find((entry) => entry.id === id && entry.isFolder && (entry.userId || 'default_user') === userId);
+    if (!folder) return null;
+
+    for (const child of all) {
+      if (child.folderId === id && (child.userId || 'default_user') === userId) {
+        child.folderId = folder.folderId || null;
+        child.updatedAt = new Date().toISOString();
+      }
+    }
+
+    writeManifest(all.filter((entry) => entry.id !== id));
+    return folder;
+  },
+
+  createFolder(name: string, userId: string, folderId: string | null = null): CloudFile {
+    const folder: CloudFile = {
+      id: `folder_${uuidv4()}`,
+      name,
+      size: 0,
+      type: 'other',
+      mimeType: 'application/x-directory',
+      uploadedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      isFavorite: false,
+      isFolder: true,
+      folderId,
+      userId,
+      storedInB2: false,
+    };
+    const all = readManifest();
+    all.unshift(folder);
+    writeManifest(all);
+    return folder;
+  },
+
+  getFolders(userId: string): CloudFile[] {
+    const all = readManifest().filter((entry) => entry.isFolder && (entry.userId || 'default_user') === userId);
+    const files = readManifest().filter((entry) => !entry.isFolder && !entry.isDeleted && (entry.userId || 'default_user') === userId);
+    const sizes = new Map(all.map((folder) => [folder.id, 0]));
+    for (const file of files) {
+      let parentId = file.folderId || null;
+      const visited = new Set<string>();
+      while (parentId && !visited.has(parentId) && sizes.has(parentId)) {
+        visited.add(parentId);
+        sizes.set(parentId, (sizes.get(parentId) || 0) + (Number(file.size) || 0));
+        parentId = all.find((folder) => folder.id === parentId)?.folderId || null;
+      }
+    }
+    return all.map((folder) => ({ ...folder, size: sizes.get(folder.id) || 0 }));
+  },
+
   toggleFavorite(id: string, isFavorite?: boolean): CloudFile | null {
     const all = readManifest();
     const file = all.find((f) => f.id === id);
@@ -264,12 +375,10 @@ export const serverStorage = {
   },
 
   getStats(customMaxBytes?: number, userId?: string): StorageStats {
-    let all = readManifest().filter((f) => !f.isDeleted);
-    if (userId && userId !== 'default_user') {
-      all = all.filter((f) => f.userId === userId || !f.userId);
-    }
+    const storedFiles = readManifest().filter((f) => !f.isFolder && (userId ? (f.userId || 'default_user') === userId : false));
+    const activeFiles = storedFiles.filter((f) => !f.isDeleted);
     const maxBytes = customMaxBytes || 100 * 1024 * 1024; // 100 MB Free (Test Mode)
-    let usedBytes = 0;
+    const usedBytes = storedFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
     let favoriteCount = 0;
 
     const categoryBreakdown: Record<FileType, { count: number; bytes: number }> = {
@@ -282,8 +391,7 @@ export const serverStorage = {
       other: { count: 0, bytes: 0 },
     };
 
-    for (const file of all) {
-      usedBytes += file.size;
+    for (const file of activeFiles) {
       if (file.isFavorite) favoriteCount++;
       if (categoryBreakdown[file.type]) {
         categoryBreakdown[file.type].count++;
@@ -297,7 +405,7 @@ export const serverStorage = {
     return {
       usedBytes,
       maxBytes,
-      totalFiles: all.length,
+      totalFiles: activeFiles.length,
       categoryBreakdown,
       favoriteCount,
     };

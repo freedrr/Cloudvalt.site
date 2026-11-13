@@ -103,6 +103,7 @@ export function LandingPage({
         name: profile.displayName || fbUser.displayName || "Vault Creator",
         email: profile.email || fbUser.email || "user@cloudvalt.site",
         avatar: profile.avatarUrl || fbUser.photoURL || undefined,
+        avatarFallback: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || "CV")}`,
         role: profile.role || "Visual Creator",
         plan: profile.plan || (selectedPlanId === "100mb" ? "100 MB Free (Test Mode)" : STORAGE_PLANS[selectedPlanId].name),
         planId: selectedPlanId,
@@ -295,7 +296,8 @@ export function LandingPage({
         id: fbUser.uid,
         name: profile?.displayName || name || fbUser.email?.split("@")[0] || "Vault Creator",
         email: fbUser.email || email,
-        avatar: profile?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || "CV")}`,
+        avatar: profile?.avatarUrl || fbUser.photoURL || undefined,
+        avatarFallback: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || "CV")}`,
         role: profile?.role || "Visual Creator",
         plan: profile?.plan || (selectedPlanId === "100mb" ? "100 MB Free (Test Mode)" : planInfo.name),
         planId: selectedPlanId,
@@ -377,6 +379,8 @@ export function LandingPage({
 
           {/* Navigation Links */}
           <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-zinc-400">
+            <a href="#about" className="hover:text-white transition-colors">About</a>
+            <a href="#faq" className="hover:text-white transition-colors">FAQ</a>
             <a href="#pricing" className="hover:text-white transition-colors flex items-center gap-1.5">
               <span>Plans</span>
               <span className="px-2 py-0.5 text-[10px] rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
@@ -512,6 +516,44 @@ export function LandingPage({
         </div>
       </section>
 
+      {/* About Cloudvalt */}
+      <section id="about" className="relative z-10 border-t border-zinc-900 bg-zinc-950/50 px-6 py-16 sm:py-20 scroll-mt-24">
+        <div className="mx-auto grid max-w-6xl gap-10 md:grid-cols-[1.1fr_0.9fr] md:items-center">
+          <div>
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">About Cloudvalt</span>
+            <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
+              A calmer home for your creative work.
+            </h2>
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-zinc-400 sm:text-base">
+              Cloudvalt is a cloud vault for photographers, videographers, and anyone with a growing collection of important files. Upload your originals, organize them into folders, preview supported media, and keep an eye on how much storage you have used.
+            </p>
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-zinc-400 sm:text-base">
+              Start with a free 100 MB test account to try the upload and library experience. When you need more room, choose a larger storage plan from your account.
+            </p>
+            <a href="#pricing" className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-white hover:text-emerald-300">
+              Explore storage plans <ArrowRight className="h-4 w-4" />
+            </a>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-zinc-800 bg-black/60 p-5">
+              <UploadCloud className="h-5 w-5 text-emerald-400" />
+              <h3 className="mt-4 text-sm font-bold text-white">Upload your originals</h3>
+              <p className="mt-2 text-xs leading-6 text-zinc-400">Keep your photos, videos, and other files together in one library.</p>
+            </div>
+            <div className="rounded-2xl border border-zinc-800 bg-black/60 p-5">
+              <HardDrive className="h-5 w-5 text-sky-400" />
+              <h3 className="mt-4 text-sm font-bold text-white">Know what you have</h3>
+              <p className="mt-2 text-xs leading-6 text-zinc-400">See your storage use and remaining space as your collection grows.</p>
+            </div>
+            <div className="rounded-2xl border border-zinc-800 bg-black/60 p-5 sm:col-span-2">
+              <ImageIcon className="h-5 w-5 text-purple-400" />
+              <h3 className="mt-4 text-sm font-bold text-white">Keep work organized</h3>
+              <p className="mt-2 text-xs leading-6 text-zinc-400">Create folders for projects, browse by file type, and find your saved media again when you need it.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* PRICING PLANS SECTION (Clean & Direct) */}
       <section id="pricing" className="py-20 border-t border-zinc-900 relative z-10 px-6">
         <div className="max-w-6xl mx-auto">
@@ -577,7 +619,7 @@ export function LandingPage({
                 </div>
               </div>
               <button
-                onClick={() => handleOpenAuth("signup", "50gb")}
+                onClick={() => window.open(STORAGE_PLANS["50gb"].checkoutUrl, "_blank", "noopener,noreferrer")}
                 className="mt-6 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs py-2.5 rounded-xl transition-all shadow-md shadow-white/5"
               >
                 Get 50 GB ($3.99)
@@ -608,7 +650,7 @@ export function LandingPage({
                 </div>
               </div>
               <button
-                onClick={() => handleOpenAuth("signup", "250gb")}
+                onClick={() => window.open(STORAGE_PLANS["250gb"].checkoutUrl, "_blank", "noopener,noreferrer")}
                 className="mt-6 w-full bg-emerald-400 hover:bg-emerald-300 text-black font-extrabold text-xs py-2.5 rounded-xl transition-all shadow-md shadow-emerald-400/20"
               >
                 Get 250 GB ($6.99)
@@ -636,17 +678,70 @@ export function LandingPage({
                 </div>
               </div>
               <button
-                onClick={() => handleOpenAuth("signup", "1tb")}
+                onClick={() => window.open(STORAGE_PLANS["1tb"].checkoutUrl, "_blank", "noopener,noreferrer")}
                 className="mt-6 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs py-2.5 rounded-xl transition-all"
               >
                 Get 1 TB ($13.99)
               </button>
             </motion.div>
+            <motion.div className="p-6 rounded-2xl border border-dashed border-zinc-700 bg-zinc-950/60 flex flex-col justify-center">
+              <span className="text-[10px] uppercase font-bold text-amber-400">Coming Soon</span>
+              <h3 className="text-xl font-bold text-white mt-3">2 TB</h3>
+              <p className="text-xs text-zinc-400 mt-1">More room for growing creator libraries.</p>
+              <div className="my-4 text-lg font-bold text-zinc-500">Coming soon</div>
+            </motion.div>
           </div>
         </div>
       </section>
 
-      {/* Security & Firebase Sync Callout */}
+      {/* Frequently Asked Questions */}
+      <section id="faq" className="relative z-10 border-t border-zinc-900 bg-black px-6 py-16 sm:py-20 scroll-mt-24">
+        <div className="mx-auto max-w-3xl">
+          <div className="mb-10 text-center">
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Quick answers</span>
+            <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-white sm:text-4xl">Frequently asked questions</h2>
+            <p className="mt-3 text-sm text-zinc-400">A few details about storing and managing your files with Cloudvalt.</p>
+          </div>
+          <div className="space-y-3">
+            {[
+              {
+                question: "What is Cloudvalt?",
+                answer: "Cloudvalt is an online library for photos, videos, and other files. You can upload, preview supported media, organize files into folders, and track your storage use.",
+              },
+              {
+                question: "Will Cloudvalt change or compress my uploaded files?",
+                answer: "Uploads are stored as the original file. The app may create a small preview thumbnail for display, but that thumbnail does not replace the original.",
+              },
+              {
+                question: "How do folders work?",
+                answer: "Folders help organize files in your library. Each folder shows the combined size of the files it contains, including nested folders.",
+              },
+              {
+                question: "What happens when I delete a file?",
+                answer: "Deleted files move to Trash, where you can restore them. They are permanently removed after 30 days; you can also permanently delete them yourself at any time.",
+              },
+              {
+                question: "What does the free plan include?",
+                answer: "The free test mode includes up to 100 MB so you can try the upload and library experience. The app displays your used and remaining storage in the vault.",
+              },
+              {
+                question: "Can I buy a paid storage plan here?",
+                answer: "The app currently shows plan options, but payment checkout and recurring billing are not connected yet. Plan selection changes the displayed storage allowance; it does not charge a card.",
+              },
+            ].map((item) => (
+              <details key={item.question} className="group rounded-2xl border border-zinc-800 bg-zinc-950 px-5 open:border-zinc-700">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-sm font-semibold text-white marker:content-none [&::-webkit-details-marker]:hidden">
+                  {item.question}
+                  <ChevronRight className="h-4 w-4 shrink-0 text-zinc-500 transition-transform group-open:rotate-90" />
+                </summary>
+                <p className="max-w-2xl pb-5 pr-8 text-sm leading-6 text-zinc-400">{item.answer}</p>
+              </details>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Security & Account Sync Callout */}
       <section id="security" className="py-14 border-t border-zinc-900 bg-black px-6 text-center text-xs text-zinc-500">
         <div className="max-w-3xl mx-auto flex flex-wrap items-center justify-center gap-6">
           <div className="flex items-center gap-1.5 text-zinc-400">
@@ -655,7 +750,7 @@ export function LandingPage({
           </div>
           <div className="flex items-center gap-1.5 text-zinc-400">
             <Database className="h-3.5 w-3.5 text-sky-400" />
-            <span>Firebase Auth & Firestore Synced</span>
+            <span>Account & Library Synced</span>
           </div>
           <div className="flex items-center gap-1.5 text-zinc-400">
             <ShieldCheck className="h-3.5 w-3.5 text-purple-400" />

@@ -5,6 +5,7 @@ export interface StoragePlan {
   tagline: string;
   priceFormatted: string;
   priceMonthly: number;
+  checkoutUrl?: string;
   maxBytes: number;
   highlight?: boolean;
   features: string[];
@@ -34,6 +35,7 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     tagline: 'For passionate mobile & mirrorless photographers',
     priceFormatted: '$3.99',
     priceMonthly: 3.99,
+    checkoutUrl: 'https://whop.com/checkout/ch_j1P4rARWnUblZZb/',
     maxBytes: 50 * 1024 * 1024 * 1024, // 50 GB
     features: [
       '50 GB high-capacity vault (~12,500 photos)',
@@ -50,6 +52,7 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     tagline: 'Best for videographers, filmmakers & active creators',
     priceFormatted: '$6.99',
     priceMonthly: 6.99,
+    checkoutUrl: 'https://whop.com/checkout/ch_NXhRqdZsxRms742/',
     maxBytes: 250 * 1024 * 1024 * 1024, // 250 GB
     highlight: true,
     features: [
@@ -67,6 +70,7 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     tagline: 'Complete production archive for studios & power creators',
     priceFormatted: '$13.99',
     priceMonthly: 13.99,
+    checkoutUrl: 'https://whop.com/checkout/ch_IYMQSYzwoDCCoQm/',
     maxBytes: 1024 * 1024 * 1024 * 1024, // 1 TB
     features: [
       '1,000 GB enterprise cloud capacity',

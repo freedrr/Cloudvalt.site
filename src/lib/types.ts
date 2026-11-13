@@ -6,6 +6,8 @@ export type FileCategory =
   | 'videos'
   | 'audio'
   | 'archives'
+  | 'folders'
+  | 'apps'
   | 'favorites'
   | 'trash';
 
@@ -32,6 +34,7 @@ export interface CloudFile {
   updatedAt: string;
   isFavorite: boolean;
   isDeleted?: boolean;
+  deletedAt?: string | null;
   contentBase64?: string; // For small previewable files
   url?: string;
   storagePath?: string;
@@ -41,6 +44,8 @@ export interface CloudFile {
   resolution?: string;
   userId?: string;
   userEmail?: string;
+  folderId?: string | null;
+  isFolder?: boolean;
 }
 
 export interface StorageStats {

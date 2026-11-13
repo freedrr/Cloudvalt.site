@@ -25,6 +25,7 @@ import {
   HardDrive,
   Sparkles,
   MessageSquare,
+  Mail,
   Settings,
   MoreVertical,
   RotateCcw,
@@ -48,6 +49,7 @@ import {
   Database,
   ArrowUpRight,
   AlertTriangle,
+  XCircle,
 } from "lucide-react";
 
 import { AppLogo } from "@/components/app-logo";
@@ -57,14 +59,19 @@ import { STORAGE_PLANS } from "@/lib/plans";
 import { CloudFile, FileCategory, StorageStats } from "@/lib/types";
 import {
   updateUserStoragePlan,
+  getUserStoragePlanLimit,
   auth,
   saveUserFileToFirestore,
+  saveUserFolderToFirestore,
   getUserFilesFromFirestore,
   deleteUserFileInFirestore,
+  deleteUserFolderInFirestore,
+  fetchUserProfile,
   restoreUserFileInFirestore,
   renameUserFileInFirestore,
   toggleUserFileFavoriteInFirestore,
   detectFileType,
+  saveUserFeedback,
 } from "@/lib/firebase";
 import { calculateStorage, formatExactBytes } from "@/lib/storageCalc";
 
@@ -92,6 +99,11 @@ function formatDate(isoString: string): string {
   }
 }
 
+function getVideoPosterUrl(file: CloudFile): string | undefined {
+  if (file.type !== "video" || !file.thumbnailUrl || file.thumbnailUrl.startsWith("/api/files/")) return undefined;
+  return file.thumbnailUrl;
+}
+
 // Get Auth Headers with Firebase ID Token
 async function getAuthHeaders() {
   const token = await auth.currentUser?.getIdToken();
@@ -116,6 +128,10 @@ export default function CloudvaltApp() {
 
   // App & Storage State
   const [activeCategory, setActiveCategory] = useState<FileCategory>("home");
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderError, setNewFolderError] = useState("");
   const [files, setFiles] = useState<CloudFile[]>([]);
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -131,18 +147,23 @@ export default function CloudvaltApp() {
   const [isUploading, setIsUploading] = useState(false);
   const [isDragOverWindow, setIsDragOverWindow] = useState(false);
   const [uploadToast, setUploadToast] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<{ name: string; loaded: number; total: number; controller: AbortController } | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{
     active: boolean;
     totalFiles: number;
     progress: number;
     currentFileName: string;
-  }>({ active: false, totalFiles: 0, progress: 0, currentFileName: "" });
+    uploadedBytes: number;
+    totalBytes: number;
+    phase: "preparing" | "uploading" | "assembling" | "cloud_upload" | "finalizing" | "saving" | "complete";
+  }>({ active: false, totalFiles: 0, progress: 0, currentFileName: "", uploadedBytes: 0, totalBytes: 0, phase: "preparing" });
 
   // Modals state
   const [previewFile, setPreviewFile] = useState<CloudFile | null>(null);
   const [renameTarget, setRenameTarget] = useState<CloudFile | null>(null);
   const [newNameInput, setNewNameInput] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<CloudFile | null>(null);
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<CloudFile | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
 
@@ -150,9 +171,91 @@ export default function CloudvaltApp() {
   const [feedbackRating, setFeedbackRating] = useState(5);
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackSent, setFeedbackSent] = useState(false);
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const submitFeedback = async () => {
+    if (!currentUser?.id) {
+      showNotification("Sign in to send feedback.");
+      return;
+    }
+    if (!feedbackText.trim()) {
+      showNotification("Please add a few words before submitting feedback.");
+      return;
+    }
+    setIsSubmittingFeedback(true);
+    try {
+      await saveUserFeedback(currentUser.id, currentUser.email, feedbackRating, feedbackText);
+      setFeedbackSent(true);
+    } catch (error: any) {
+      showNotification(error?.message || "Could not send feedback. Please try again.");
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
+  };
+  const openFolder = (folder: CloudFile) => {
+    setActiveCategory("all");
+    setActiveFolderId(folder.id);
+    setSelectedIds(new Set());
+  };
+
+  const createFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    setNewFolderError("");
+    if (files.some((file) => file.isFolder && file.folderId === activeFolderId && file.name.toLowerCase() === name.toLowerCase())) {
+      showNotification("A folder with that name already exists here.");
+      return;
+    }
+    const folder: CloudFile = {
+      id: `folder_${crypto.randomUUID()}`,
+      name,
+      size: 0,
+      type: "other",
+      mimeType: "application/x-directory",
+      uploadedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      isFavorite: false,
+      isFolder: true,
+      folderId: activeFolderId,
+      userId: currentUser?.id,
+      userEmail: currentUser?.email,
+      storedInB2: false,
+    };
+
+    try {
+      if (currentUser?.id && currentUser.isFirebaseUser) {
+        await saveUserFolderToFirestore(currentUser.id, currentUser.email, folder);
+      } else {
+        const response = await fetch("/api/folders", {
+          method: "POST",
+          headers: await getAuthHeaders(),
+          body: JSON.stringify({ name, folderId: activeFolderId, userId: currentUser?.id || "default_user" }),
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          throw new Error(result.error || "Could not create folder.");
+        }
+      }
+      // Show the newly created folder immediately, then switch to the folder
+      // view because Home intentionally lists files rather than folders.
+      setFiles((previous) => [folder, ...previous.filter((entry) => entry.id !== folder.id)]);
+      setActiveCategory("folders");
+      setNewFolderName("");
+      setNewFolderOpen(false);
+      showNotification(`Folder “${name}” created.`);
+      // The category change triggers a fresh load using the folders query.
+    } catch (error: any) {
+      console.error("Folder creation failed:", error);
+      const message = String(error?.message || "");
+      const readableMessage = message.includes("permission-denied") || message.includes("Missing or insufficient permissions")
+        ? "Your account could not save this folder. Check your account permissions and try again."
+        : "Could not create folder. Check your connection and try again.";
+      setNewFolderError(readableMessage);
+      showNotification(readableMessage);
+    }
+  };
 
   // Check initial authentication
   useEffect(() => {
@@ -182,6 +285,50 @@ export default function CloudvaltApp() {
     window.addEventListener("cloudvalt_auth_change", handleAuthChange);
     return () => window.removeEventListener("cloudvalt_auth_change", handleAuthChange);
   }, []);
+
+  // Refresh the avatar from the saved Firestore profile when an existing
+  // browser session is restored, so the profile URL does not stay stale in
+  // local storage after sign-in.
+  useEffect(() => {
+    if (!currentUser?.isFirebaseUser || !currentUser.id) return;
+    let cancelled = false;
+    Promise.all([
+      fetchUserProfile(currentUser.id),
+      getUserStoragePlanLimit(currentUser.id),
+    ])
+      .then(([profile, firestoreMaxBytes]) => {
+        if (cancelled) return;
+        const profileAvatarUrl = profile?.avatarUrl?.trim() || currentUser.avatarFallback;
+        const savedPlanName = profile?.plan as string | undefined;
+        const planId = savedPlanName === "50 GB" || savedPlanName === "50 GB Starter"
+          ? "50gb"
+          : savedPlanName === "250 GB" || savedPlanName === "250 GB Pro Studio"
+            ? "250gb"
+            : savedPlanName === "1 TB" || savedPlanName === "1 TB Ultimate"
+              ? "1tb"
+              : currentUser.planId;
+        const refreshedUser = {
+          ...currentUser,
+          avatar: profileAvatarUrl,
+          avatarFailed: false,
+          planId,
+          plan: profile?.plan || currentUser.plan,
+          maxStorageBytes: firestoreMaxBytes || currentUser.maxStorageBytes,
+        };
+        if (currentUser.avatar === refreshedUser.avatar
+          && currentUser.avatarFailed !== true
+          && currentUser.maxStorageBytes === refreshedUser.maxStorageBytes
+          && currentUser.planId === refreshedUser.planId
+          && currentUser.plan === refreshedUser.plan) return;
+        setCurrentUser(refreshedUser);
+        setStoredUser(refreshedUser);
+        setStats((previous) => previous
+          ? { ...previous, maxBytes: refreshedUser.maxStorageBytes }
+          : previous);
+      })
+      .catch((error) => console.warn("Could not refresh profile photo:", error));
+    return () => { cancelled = true; };
+  }, [currentUser]);
 
   // Close user dropdown when clicking outside
   useEffect(() => {
@@ -214,13 +361,41 @@ export default function CloudvaltApp() {
             effectiveMaxBytes
           );
           if (fsData) {
-            setFiles(fsData.files || []);
+            const expiredIds = new Set<string>();
+            for (const expiredFile of fsData.expiredTrash || []) {
+              try {
+                const params = new URLSearchParams({ permanent: "true", userId: currentUser.id });
+                if (expiredFile.b2FileName) params.set("b2FileName", expiredFile.b2FileName);
+                if (expiredFile.storedInB2) params.set("storedInB2", "true");
+                const response = await fetch(`/api/files/${encodeURIComponent(expiredFile.id)}?${params}`, {
+                  method: "DELETE",
+                  headers: await getAuthHeaders(),
+                });
+                const result = await response.json().catch(() => ({}));
+                if (response.ok && result.success) {
+                  await deleteUserFileInFirestore(currentUser.id, expiredFile.id, true);
+                  expiredIds.add(expiredFile.id);
+                } else {
+                  console.warn("Expired Trash cleanup deferred:", expiredFile.id, result.failures || result.error);
+                }
+              } catch (cleanupError) {
+                console.warn("Expired Trash cleanup deferred:", expiredFile.id, cleanupError);
+              }
+            }
+            setFiles((fsData.files || []).filter((file) => !expiredIds.has(file.id)));
             setStats(fsData.stats || null);
             setLoading(false);
             return;
           }
         } catch (fsErr) {
           console.warn("Firestore files fetch notice:", fsErr);
+          setLoading(false);
+          const firestoreError = fsErr as { code?: string; message?: string };
+          const reason = firestoreError?.code || firestoreError?.message || "unknown Firestore error";
+          showNotification(activeCategory === "folders"
+            ? `Could not load your folders (${reason}). Check your connection and account access.`
+            : `Could not load your files (${reason}). Check your connection and account access.`);
+          return;
         }
       }
 
@@ -231,7 +406,29 @@ export default function CloudvaltApp() {
       );
       if (res.ok) {
         const data = await res.json();
-        setFiles(data.files || []);
+        let loadedFiles: CloudFile[] = data.files || [];
+        if (activeCategory === "trash") {
+          const expiredIds = new Set<string>();
+          const retentionMs = 30 * 24 * 60 * 60 * 1000;
+          for (const file of loadedFiles) {
+            if (!file.deletedAt || Date.now() - new Date(file.deletedAt).getTime() < retentionMs) continue;
+            try {
+              const params = new URLSearchParams({ permanent: "true", userId });
+              if (file.b2FileName) params.set("b2FileName", file.b2FileName);
+              if (file.storedInB2) params.set("storedInB2", "true");
+              const cleanup = await fetch(`/api/files/${encodeURIComponent(file.id)}?${params}`, {
+                method: "DELETE",
+                headers: await getAuthHeaders(),
+              });
+              const result = await cleanup.json().catch(() => ({}));
+              if (cleanup.ok && result.success) expiredIds.add(file.id);
+            } catch (cleanupError) {
+              console.warn("Expired Trash cleanup deferred:", file.id, cleanupError);
+            }
+          }
+          loadedFiles = loadedFiles.filter((file) => !expiredIds.has(file.id));
+        }
+        setFiles(loadedFiles);
         if (data.stats) {
           setStats({
             ...data.stats,
@@ -370,10 +567,11 @@ export default function CloudvaltApp() {
     file: File,
     userId: string,
     maxBytes: number,
-    onProgress: (loaded: number, total: number) => void
+    onProgress: (loaded: number, total: number) => void,
+    onPhase: (phase: "uploading" | "assembling" | "cloud_upload" | "finalizing" | "saving", uploadedBytes?: number, totalBytes?: number) => void
   ): Promise<{ ok: boolean; status: number; data?: any }> => {
-    const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB per slice
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    let CHUNK_SIZE = 16 * 1024 * 1024;
+    const MAX_PARALLEL_CHUNKS = 4;
     const headers = await getAuthHeaders();
 
     // 1. Initialize session
@@ -397,39 +595,88 @@ export default function CloudvaltApp() {
     }
 
     const uploadId = initData.uploadId;
-    let bytesUploaded = 0;
-
-    // 2. Upload chunks sequentially
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    CHUNK_SIZE = Number(initData.chunkSize) || CHUNK_SIZE;
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    // Each part is sent directly from the browser to B2. The app server only
+    // signs each temporary URL and records B2's confirmation.
+    onPhase("uploading");
+    const loadedByChunk = new Map<number, number>();
+    let nextChunkIndex = 0;
+    let uploadError: { status: number; data: any } | null = null;
+    const uploadChunk = async (chunkIndex: number): Promise<void> => {
       const start = chunkIndex * CHUNK_SIZE;
       const end = Math.min(file.size, start + CHUNK_SIZE);
       const chunkBlob = file.slice(start, end);
 
-      const chunkFormData = new FormData();
-      chunkFormData.append("uploadId", uploadId);
-      chunkFormData.append("chunkIndex", String(chunkIndex));
-      chunkFormData.append("chunk", chunkBlob, `part_${chunkIndex}`);
-
-      const chunkRes = await fetch("/api/upload/chunk", {
+      const signedPart = await fetch("/api/upload/chunk/url", {
         method: "POST",
-        headers: {
-          Authorization: headers.Authorization || "",
-        },
-        body: chunkFormData,
+        headers,
+        body: JSON.stringify({ uploadId, chunkIndex }),
       });
-
-      if (!chunkRes.ok) {
-        let errJson = {};
-        try { errJson = await chunkRes.json(); } catch {}
-        return { ok: false, status: chunkRes.status, data: errJson };
+      const signedPartData = await signedPart.json().catch(() => ({}));
+      if (!signedPart.ok || !signedPartData.uploadUrl) {
+        throw new Error(signedPartData.error || "Could not prepare this file part.");
       }
 
-      bytesUploaded += (end - start);
-      onProgress(bytesUploaded, file.size);
+      return new Promise<void>((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("PUT", signedPartData.uploadUrl);
+      request.upload.onprogress = (event) => {
+        loadedByChunk.set(chunkIndex, Math.min(end - start, event.loaded));
+        const loaded = Array.from(loadedByChunk.values()).reduce((sum, amount) => sum + amount, 0);
+        onProgress(Math.min(file.size, loaded), file.size);
+      };
+      request.onerror = () => reject(new Error("Network error while uploading a file part."));
+      request.onload = () => {
+        if (request.status < 200 || request.status >= 300) {
+          uploadError = { status: request.status, data: { error: "B2 rejected this file part." } };
+          reject(new Error("Cloud storage rejected this file part."));
+          return;
+        }
+        const eTag = request.getResponseHeader("ETag");
+        if (!eTag) {
+          reject(new Error("Cloud storage did not return a part confirmation. Check the B2 CORS rule exposes the ETag header."));
+          return;
+        }
+        fetch("/api/upload/chunk/part-complete", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ uploadId, chunkIndex, eTag }),
+        }).then(async (confirmation) => {
+          const data = await confirmation.json().catch(() => ({}));
+          if (!confirmation.ok) throw new Error(data.error || "Could not confirm the uploaded part.");
+          loadedByChunk.set(chunkIndex, end - start);
+          const loaded = Array.from(loadedByChunk.values()).reduce((sum, amount) => sum + amount, 0);
+          onProgress(Math.min(file.size, loaded), file.size);
+          resolve();
+        }).catch(reject);
+      };
+      request.send(chunkBlob);
+      });
+    };
+
+    const worker = async () => {
+      while (true) {
+        if (uploadError) return;
+        const chunkIndex = nextChunkIndex++;
+        if (chunkIndex >= totalChunks) return;
+        try {
+          await uploadChunk(chunkIndex);
+        } catch {
+          return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL_CHUNKS, totalChunks) }, () => worker()));
+    if (uploadError) return { ok: false, ...uploadError };
+    if (loadedByChunk.size !== totalChunks) {
+      return { ok: false, status: 0, data: { error: "The upload stopped before all file parts were sent." } };
     }
 
-    // 3. Complete and assemble without high RAM
-    const completeRes = await fetch("/api/upload/chunk/complete", {
+    // 3. Assemble the uploaded chunks, send the cloud copy, and follow the
+    // server's progress until it confirms the file has been saved.
+    let completionReturned = false;
+    const completePromise = fetch("/api/upload/chunk/complete", {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -439,8 +686,25 @@ export default function CloudvaltApp() {
         userId,
         totalChunks,
       }),
-    });
+    }).finally(() => { completionReturned = true; });
 
+    let serverFinished = false;
+    while (!serverFinished && !completionReturned) {
+      try {
+        const statusResponse = await fetch(`/api/upload/chunk/${encodeURIComponent(uploadId)}/status`, { headers });
+        if (!statusResponse.ok) break;
+        const status = await statusResponse.json();
+        if (status.phase === "assembling") onPhase("assembling", 0, file.size);
+        else if (status.phase === "cloud_upload") onPhase("cloud_upload", Number(status.cloudUploadedBytes) || 0, file.size);
+        else if (status.phase === "finalizing") onPhase("finalizing", file.size, file.size);
+        else if (status.phase === "complete" || status.phase === "error") serverFinished = true;
+      } catch {
+        // Keep waiting for the completion response if the status request fails.
+      }
+      if (!serverFinished) await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+
+    const completeRes = await completePromise;
     const completeData = await completeRes.json().catch(() => ({}));
     return {
       ok: completeRes.ok,
@@ -456,6 +720,7 @@ export default function CloudvaltApp() {
     const filesArray = Array.from(fileList);
     const count = filesArray.length;
     const totalUploadBytes = filesArray.reduce((acc, f) => acc + f.size, 0);
+    const targetFolderId = activeFolderId;
     const currentUsed = stats?.usedBytes || 0;
     const currentMax = effectiveMaxBytes;
 
@@ -484,8 +749,11 @@ export default function CloudvaltApp() {
     setUploadProgress({
       active: true,
       totalFiles: count,
-      progress: 5,
+      progress: 0,
       currentFileName: count > 1 ? `${firstFileName} + ${count - 1} more` : firstFileName,
+      uploadedBytes: 0,
+      totalBytes: totalUploadBytes,
+      phase: "preparing",
     });
 
     const userId = currentUser?.id || "default_user";
@@ -494,14 +762,14 @@ export default function CloudvaltApp() {
 
     // Pre-extract video thumbnails for instant previews
     const videoThumbs = new Map<string, string>();
-    for (const f of filesArray) {
-      if (f.type.startsWith("video/") || f.name.match(/\.(mp4|mov|mkv|webm|avi|wmv|m4v)$/i)) {
+    await Promise.all(filesArray.map(async (file) => {
+      if (file.type.startsWith("video/") || file.name.match(/\.(mp4|mov|mkv|webm|avi|wmv|m4v)$/i)) {
         try {
-          const thumb = await generateVideoThumbnail(f);
-          if (thumb) videoThumbs.set(f.name, thumb);
+          const thumb = await generateVideoThumbnail(file);
+          if (thumb) videoThumbs.set(file.name, thumb);
         } catch {}
       }
-    }
+    }));
 
     try {
       for (let fileIdx = 0; fileIdx < count; fileIdx++) {
@@ -511,21 +779,42 @@ export default function CloudvaltApp() {
         setUploadProgress({
           active: true,
           totalFiles: count,
-          progress: Math.max(5, Math.round((overallUploadedBytes / totalUploadBytes) * 98)),
+          progress: Math.min(99, Math.round((overallUploadedBytes / totalUploadBytes) * 99)),
           currentFileName: `Uploading ${file.name} (${fileIdx + 1}/${count})`,
+          uploadedBytes: overallUploadedBytes,
+          totalBytes: totalUploadBytes,
+          phase: "uploading",
         });
 
-        // If file is > 8MB, use chunked stream upload to prevent RAM crash for large files (e.g. 5GB - 10GB+)
-        if (file.size > 8 * 1024 * 1024) {
+        // Every file uses the direct multipart route so file bytes do not pass through this app server.
+        if (file.size > 0) {
           const chunkResult = await uploadSingleFileChunked(
             file,
             userId,
             effectiveMaxBytes,
             (fileChunkLoaded) => {
               const currentTotal = overallUploadedBytes + fileChunkLoaded;
-              const pct = Math.min(98, Math.round((currentTotal / totalUploadBytes) * 100));
-              setUploadProgress((prev) => ({ ...prev, progress: pct }));
-            }
+              const pct = Math.min(99, Math.round(((2 * overallUploadedBytes + fileChunkLoaded) / (2 * totalUploadBytes)) * 99));
+              setUploadProgress((prev) => ({ ...prev, progress: pct, uploadedBytes: Math.min(totalUploadBytes, currentTotal) }));
+            },
+            (phase, phaseBytes = 0) => setUploadProgress((prev) => ({
+              ...prev,
+              phase,
+              progress: phase === "assembling"
+                ? Math.min(99, Math.round(((2 * overallUploadedBytes + file.size) / (2 * totalUploadBytes)) * 99))
+                : phase === "cloud_upload"
+                  ? Math.min(99, Math.round(((2 * overallUploadedBytes + file.size + phaseBytes) / (2 * totalUploadBytes)) * 99))
+                  : phase === "finalizing"
+                    ? Math.min(99, Math.round(((2 * overallUploadedBytes + 2 * file.size) / (2 * totalUploadBytes)) * 99))
+                    : prev.progress,
+              currentFileName: phase === "assembling" ? `Preparing ${file.name}...`
+                : phase === "cloud_upload" ? `Saving ${file.name} to your cloud vault...`
+                  : phase === "finalizing" ? `Finishing ${file.name}...`
+                    : `Uploading ${file.name} (${fileIdx + 1}/${count})`,
+              uploadedBytes: phase === "cloud_upload" ? Math.min(totalUploadBytes, overallUploadedBytes + phaseBytes)
+                : phase === "finalizing" ? Math.min(totalUploadBytes, overallUploadedBytes + file.size)
+                  : prev.uploadedBytes,
+            }))
           );
 
           if (!chunkResult.ok || !chunkResult.data?.file) {
@@ -549,19 +838,49 @@ export default function CloudvaltApp() {
           }
           savedFiles.push(savedFile);
           overallUploadedBytes += file.size;
+          setUploadProgress((prev) => ({ ...prev, uploadedBytes: overallUploadedBytes, progress: Math.min(99, Math.round((2 * overallUploadedBytes / (2 * totalUploadBytes)) * 99)) }));
         } else {
           // Standard upload for small files
           const fileFormData = new FormData();
           fileFormData.append("userId", userId);
           fileFormData.append("files", file);
 
-          const res = await fetch("/api/files", {
-            method: "POST",
-            headers: {
-              Authorization: (await getAuthHeaders()).Authorization || "",
-              "x-max-bytes": String(effectiveMaxBytes),
-            },
-            body: fileFormData,
+          const authHeaders = await getAuthHeaders();
+          const res = await new Promise<{ ok: boolean; status: number; json: () => Promise<any> }>((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("POST", "/api/files");
+            if (authHeaders.Authorization) request.setRequestHeader("Authorization", authHeaders.Authorization);
+            request.setRequestHeader("x-max-bytes", String(effectiveMaxBytes));
+            request.upload.onprogress = (event) => {
+              if (!event.lengthComputable) return;
+              const transferred = Math.min(file.size, event.loaded);
+              const currentTotal = overallUploadedBytes + transferred;
+              setUploadProgress((previous) => ({
+                ...previous,
+                progress: Math.min(99, Math.round(((2 * overallUploadedBytes + transferred) / (2 * totalUploadBytes)) * 99)),
+                uploadedBytes: Math.min(totalUploadBytes, currentTotal),
+                currentFileName: `Uploading ${file.name} (${fileIdx + 1}/${count})`,
+                phase: "uploading",
+              }));
+            };
+            request.onerror = () => reject(new Error(`Network error while uploading ${file.name}.`));
+            request.onload = () => {
+              setUploadProgress((previous) => ({
+                ...previous,
+                progress: Math.max(99, previous.progress),
+                uploadedBytes: Math.min(totalUploadBytes, overallUploadedBytes + file.size),
+                currentFileName: `Saving ${file.name} to your cloud vault...`,
+                phase: "saving",
+              }));
+              let responseData: any = {};
+              try { responseData = JSON.parse(request.responseText || "{}"); } catch {}
+              resolve({
+                ok: request.status >= 200 && request.status < 300,
+                status: request.status,
+                json: async () => responseData,
+              });
+            };
+            request.send(fileFormData);
           });
 
           if (!res.ok) {
@@ -587,33 +906,48 @@ export default function CloudvaltApp() {
             savedFiles.push(sf);
           }
           overallUploadedBytes += file.size;
+          setUploadProgress((prev) => ({ ...prev, uploadedBytes: overallUploadedBytes, progress: Math.min(99, Math.round((2 * overallUploadedBytes / (2 * totalUploadBytes)) * 99)) }));
         }
       }
 
-      setUploadProgress((prev) => ({ ...prev, progress: 100 }));
+      setUploadProgress((prev) => ({ ...prev, progress: 99, phase: "saving", currentFileName: "Saving file details..." }));
 
       // Store file record in Firestore under user's files with full schema & ordering
       if (currentUser?.id && currentUser.isFirebaseUser && savedFiles.length > 0) {
         for (const sf of savedFiles) {
           try {
-            await saveUserFileToFirestore(currentUser.id, currentUser.email, {
+            const savedMetadata = await saveUserFileToFirestore(currentUser.id, currentUser.email, {
               ...sf,
-              b2FileId: sf.b2FileId || `b2_${sf.id}`,
-              b2FileName: sf.b2FileName || `users/${currentUser.id}/${sf.id}_${sf.name}`,
               userId: currentUser.id,
               userEmail: currentUser.email,
+              folderId: targetFolderId,
               uploadedAt: new Date().toISOString(),
-              thumbnailUrl: sf.thumbnailUrl || `/api/files/${sf.id}`,
-              url: `/api/files/${sf.id}`,
+              thumbnailUrl: sf.thumbnailUrl || (sf.type === "image" ? sf.url || `/api/files/${sf.id}` : null),
+              url: sf.url || `/api/files/${sf.id}`,
             });
+            Object.assign(sf, savedMetadata);
           } catch (fsErr) {
             console.warn("Firestore file save:", fsErr);
+            throw fsErr;
           }
+        }
+      }
+
+      if (!(currentUser?.id && currentUser.isFirebaseUser) && targetFolderId) {
+        for (const uploaded of savedFiles) {
+          const response = await fetch(`/api/files/${encodeURIComponent(uploaded.id)}`, {
+            method: "PATCH",
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({ folderId: targetFolderId }),
+          });
+          if (!response.ok) throw new Error(`Uploaded ${uploaded.name}, but could not place it in the selected folder.`);
+          uploaded.folderId = targetFolderId;
         }
       }
 
       showNotification(`Uploaded ${savedFiles.length} file${savedFiles.length > 1 ? "s" : ""} to Cloudvalt.`);
       await loadFiles();
+      setUploadProgress((prev) => ({ ...prev, progress: 100, phase: "complete", uploadedBytes: totalUploadBytes, currentFileName: "Upload complete" }));
     } catch (err) {
       console.error("Upload error:", err);
       showNotification("Upload failed due to network error.");
@@ -621,7 +955,7 @@ export default function CloudvaltApp() {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
       setTimeout(() => {
-        setUploadProgress({ active: false, totalFiles: 0, progress: 0, currentFileName: "" });
+        setUploadProgress({ active: false, totalFiles: 0, progress: 0, currentFileName: "", uploadedBytes: 0, totalBytes: 0, phase: "preparing" });
       }, 1500);
     }
   };
@@ -651,6 +985,12 @@ export default function CloudvaltApp() {
   const handleUpgradePlan = async (planId: "100mb" | "50gb" | "250gb" | "1tb") => {
     const planInfo = STORAGE_PLANS[planId];
     if (!planInfo) return;
+
+    if (planInfo.checkoutUrl) {
+      setShowUpgradeModal(false);
+      window.open(planInfo.checkoutUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
 
     if (currentUser) {
       const updatedUser: User = {
@@ -712,22 +1052,18 @@ export default function CloudvaltApp() {
   // Direct Permanent Delete
   const confirmDelete = async () => {
     if (!deleteTarget) return;
+    const permanently = activeCategory === "trash";
 
     try {
-      if (currentUser?.id && currentUser.isFirebaseUser) {
-        await deleteUserFileInFirestore(currentUser.id, deleteTarget.id, true).catch((err) =>
-          console.warn("Firestore delete sync:", err)
-        );
-      }
-
       const deleteUrl =
-        `/api/files/${encodeURIComponent(deleteTarget.id)}?permanent=true` +
+        `/api/files/${encodeURIComponent(deleteTarget.id)}?permanent=${permanently}` +
         (currentUser?.id
           ? `&userId=${encodeURIComponent(currentUser.id)}`
           : "") +
         (deleteTarget.b2FileName
           ? `&b2FileName=${encodeURIComponent(deleteTarget.b2FileName)}`
-          : "");
+          : "") +
+        (deleteTarget.storedInB2 ? "&storedInB2=true" : "");
 
       const res = await fetch(deleteUrl, { 
         method: "DELETE",
@@ -736,13 +1072,23 @@ export default function CloudvaltApp() {
 
       const data = await res.json().catch(() => ({}));
 
-      if (!res.ok && !data.success) {
-        throw new Error(data.details || data.error || `Delete failed (${res.status})`);
+      if (!res.ok || !data.success) {
+        const details = Array.isArray(data.failures) ? data.failures.join("; ") : data.error;
+        throw new Error(details || data.details || `Delete failed (${res.status})`);
       }
 
-      showNotification("File permanently deleted from vault and Backblaze B2.");
+      // Remove Firestore records only after the server has confirmed B2 cleanup.
+      if (currentUser?.id && currentUser.isFirebaseUser) {
+        await deleteUserFileInFirestore(currentUser.id, deleteTarget.id, permanently);
+      }
 
-      setFiles((prev) => prev.filter((f) => f.id !== deleteTarget.id));
+      showNotification(permanently
+        ? "File permanently deleted from your vault and cloud storage."
+        : "File moved to Trash. You can restore it for 30 days.");
+
+      setFiles((prev) => permanently
+        ? prev.filter((f) => f.id !== deleteTarget.id)
+        : prev.map((f) => f.id === deleteTarget.id ? { ...f, isDeleted: true, deletedAt: data.deletedAt || new Date().toISOString() } : f));
 
       if (previewFile?.id === deleteTarget.id) {
         setPreviewFile(null);
@@ -754,6 +1100,58 @@ export default function CloudvaltApp() {
     } catch (err: any) {
       console.error("Delete failed:", err);
       showNotification(err.message || "Failed to delete file.");
+    }
+  };
+
+  const restoreFile = async (file: CloudFile, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    try {
+      if (currentUser?.id && currentUser.isFirebaseUser) {
+        await restoreUserFileInFirestore(currentUser.id, file.id);
+      } else {
+        const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
+          method: "PATCH",
+          headers: await getAuthHeaders(),
+          body: JSON.stringify({ action: "restore" }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) throw new Error(result.error || "Could not restore file.");
+      }
+      setFiles((previous) => previous.filter((entry) => entry.id !== file.id));
+      showNotification(`Restored ${file.name}.`);
+      await loadFiles();
+    } catch (error: any) {
+      showNotification(error.message || "Could not restore file.");
+    }
+  };
+
+  const confirmDeleteFolder = async () => {
+    if (!deleteFolderTarget) return;
+    const folder = deleteFolderTarget;
+    try {
+      if (currentUser?.id && currentUser.isFirebaseUser) {
+        await deleteUserFolderInFirestore(currentUser.id, folder.id, folder.folderId || null);
+      } else {
+        const query = currentUser?.id ? `?userId=${encodeURIComponent(currentUser.id)}` : "";
+        const response = await fetch(`/api/folders/${encodeURIComponent(folder.id)}${query}`, {
+          method: "DELETE",
+          headers: await getAuthHeaders(),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) throw new Error(result.error || "Could not delete folder.");
+      }
+      setFiles((previous) => previous
+        .filter((file) => file.id !== folder.id)
+        .map((file) => file.folderId === folder.id ? { ...file, folderId: folder.folderId || null } : file));
+      if (activeFolderId === folder.id) {
+        setActiveFolderId(folder.folderId || null);
+        setActiveCategory("folders");
+      }
+      setDeleteFolderTarget(null);
+      showNotification("Folder deleted. Its files were kept and moved to the parent folder.");
+      await loadFiles();
+    } catch (error: any) {
+      showNotification(error.message || "Could not delete folder.");
     }
   };
 
@@ -790,25 +1188,41 @@ export default function CloudvaltApp() {
   // Download File
   const downloadFile = async (file: CloudFile, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    const controller = new AbortController();
     try {
-      showNotification(`Downloading ${file.name}...`);
+      setDownloadProgress({ name: file.name, loaded: 0, total: file.size || 0, controller });
       const downloadUrl = `/api/files/${file.id}?download=true${currentUser?.id ? `&userId=${currentUser.id}` : ""}`;
-      const res = await fetch(downloadUrl, { headers: await getAuthHeaders() });
+      const res = await fetch(downloadUrl, { headers: await getAuthHeaders(), signal: controller.signal });
       if (!res.ok) throw new Error("Download request failed");
 
-      const blob = await res.blob();
+      const total = Number(res.headers.get("Content-Length")) || file.size || 0;
+      if (!res.body) throw new Error("Download stream is unavailable");
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let loaded = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        setDownloadProgress({ name: file.name, loaded, total, controller });
+      }
+      const blob = new Blob(chunks as BlobPart[], { type: res.headers.get("Content-Type") || file.mimeType });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = file.name;
       document.body.appendChild(link);
       link.click();
-      window.URL.revokeObjectURL(url);
       document.body.removeChild(link);
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      setDownloadProgress(null);
       showNotification(`Downloaded ${file.name}`);
     } catch (err) {
+      setDownloadProgress(null);
+      if (controller.signal.aborted) return;
       console.error("Download error:", err);
-      window.open(`/api/files/${file.id}?download=true${currentUser?.id ? `&userId=${currentUser.id}` : ""}`, "_blank");
+      showNotification(`Could not download ${file.name}.`);
     }
   };
 
@@ -834,27 +1248,24 @@ export default function CloudvaltApp() {
 
   const handleBulkDelete = async () => {
     const ids = Array.from(selectedIds);
+    const permanently = activeCategory === "trash";
+    if (permanently && !window.confirm(`Permanently delete ${ids.length} selected file${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
 
     let succeeded = 0;
     let failed = 0;
 
     for (const id of ids) {
       try {
-        if (currentUser?.id && currentUser.isFirebaseUser) {
-          await deleteUserFileInFirestore(currentUser.id, id, true).catch((e) =>
-            console.warn("Firestore bulk delete sync:", e)
-          );
-        }
-
         const file = files.find(f => f.id === id);
         const url =
-          `/api/files/${encodeURIComponent(id)}?permanent=true` +
+          `/api/files/${encodeURIComponent(id)}?permanent=${permanently}` +
           (currentUser?.id
             ? `&userId=${encodeURIComponent(currentUser.id)}`
             : "") +
           (file?.b2FileName
             ? `&b2FileName=${encodeURIComponent(file.b2FileName)}`
-            : "");
+            : "") +
+          (file?.storedInB2 ? "&storedInB2=true" : "");
 
         const res = await fetch(url, { 
           method: "DELETE",
@@ -862,8 +1273,13 @@ export default function CloudvaltApp() {
         });
 
         const data = await res.json().catch(() => ({}));
-        if (!res.ok && !data.success) {
-          throw new Error(`Delete failed (${res.status})`);
+        if (!res.ok || !data.success) {
+          const details = Array.isArray(data.failures) ? data.failures.join("; ") : data.error;
+          throw new Error(details || `Delete failed (${res.status})`);
+        }
+
+        if (currentUser?.id && currentUser.isFirebaseUser) {
+          await deleteUserFileInFirestore(currentUser.id, id, permanently);
         }
 
         succeeded++;
@@ -875,9 +1291,9 @@ export default function CloudvaltApp() {
 
     setSelectedIds(new Set());
 
-    showNotification(
-      `${succeeded} file${succeeded !== 1 ? "s" : ""} permanently deleted${failed ? `, ${failed} failed` : ""}.`
-    );
+    showNotification(permanently
+      ? `${succeeded} file${succeeded !== 1 ? "s" : ""} permanently deleted${failed ? `, ${failed} failed` : ""}.`
+      : `${succeeded} file${succeeded !== 1 ? "s" : ""} moved to Trash${failed ? `, ${failed} failed` : ""}.`);
     await loadFiles();
   };
 
@@ -891,7 +1307,16 @@ export default function CloudvaltApp() {
 
   // Filter & Sort
   const filteredAndSortedFiles = useMemo(() => {
-    let result = [...files];
+    let result = activeCategory === "folders"
+      ? files.filter((file) => (file.folderId || null) === activeFolderId
+        && (activeFolderId ? true : Boolean(file.isFolder)))
+      : files.filter((file) => !file.isFolder && (!activeFolderId || file.folderId === activeFolderId));
+    if (activeCategory === "apps") {
+      result = files.filter((file) => !file.isFolder && /\.(exe|msi|app|dmg|pkg|deb|rpm|apk|aab|ipa|bat|cmd|appx|msix)$/i.test(file.name) && (!activeFolderId || file.folderId === activeFolderId));
+    }
+    if (activeCategory !== "folders" && activeFolderId && activeCategory !== "apps") {
+      result = result.filter((file) => !file.isFolder);
+    }
 
     result.sort((a, b) => {
       if (sortBy === "name") {
@@ -908,7 +1333,7 @@ export default function CloudvaltApp() {
     });
 
     return result;
-  }, [files, sortBy, sortOrder]);
+  }, [files, activeCategory, activeFolderId, sortBy, sortOrder]);
 
   // File Icon Renderer
   const renderFileIcon = (file: CloudFile | null, sizeClass = "h-5 w-5") => {
@@ -936,6 +1361,7 @@ export default function CloudvaltApp() {
   const renderGridMediaPreview = (file: CloudFile) => {
     const effectiveType = file.type && file.type !== "other" ? file.type : detectFileType(file.name, file.mimeType);
     const ext = file.name.split(".").pop()?.toUpperCase() || "";
+    const videoPoster = getVideoPosterUrl(file);
 
     if (effectiveType === "image") {
       return (
@@ -970,9 +1396,9 @@ export default function CloudvaltApp() {
           </div>
 
           {/* Primary Video or Thumbnail Layer */}
-          {file.thumbnailUrl ? (
+          {videoPoster ? (
             <img
-              src={file.thumbnailUrl}
+              src={videoPoster}
               alt={file.name}
               className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 z-20"
               onError={(e) => {
@@ -1117,11 +1543,12 @@ export default function CloudvaltApp() {
   // List View Media Thumb Renderer
   const renderListMediaThumb = (file: CloudFile, sizeClass = "h-10 w-10") => {
     const effectiveType = file.type && file.type !== "other" ? file.type : detectFileType(file.name, file.mimeType);
+    const videoPoster = getVideoPosterUrl(file);
 
-    if (effectiveType === "image" || file.thumbnailUrl || file.contentBase64) {
+    if (effectiveType === "image" || videoPoster || (effectiveType !== "video" && (file.thumbnailUrl || file.contentBase64))) {
       return (
         <img
-          src={file.thumbnailUrl || file.contentBase64 || file.url || `/api/files/${file.id}`}
+          src={videoPoster || file.thumbnailUrl || file.contentBase64 || file.url || `/api/files/${file.id}`}
           alt={file.name}
           className="h-full w-full object-cover"
           onError={(e) => {
@@ -1200,6 +1627,20 @@ export default function CloudvaltApp() {
           if (e.target.files) handleFilesUpload(e.target.files);
         }}
       />
+      {newFolderOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setNewFolderOpen(false); }}>
+          <form className="w-full max-w-sm rounded-2xl border border-zinc-700 bg-zinc-950 p-5 shadow-2xl" onSubmit={(e) => { e.preventDefault(); void createFolder(); }}>
+            <h2 className="text-lg font-bold text-white">Create a folder</h2>
+            <p className="mt-1 text-xs text-zinc-400">Uploads will go into this folder while it is open.</p>
+            <input autoFocus value={newFolderName} onChange={(e) => { setNewFolderName(e.target.value); setNewFolderError(""); }} maxLength={120} placeholder="Folder name" className="mt-4 w-full rounded-lg border border-zinc-700 bg-black px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+            {newFolderError && <p role="alert" className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-xs leading-relaxed text-red-300">{newFolderError}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setNewFolderOpen(false)} className="rounded-lg px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800">Cancel</button>
+              <button type="submit" disabled={!newFolderName.trim()} className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black disabled:opacity-50">Create folder</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Global Window Drag-Over Overlay */}
       <AnimatePresence>
@@ -1239,7 +1680,17 @@ export default function CloudvaltApp() {
                   <UploadCloud className="h-4 w-4 animate-pulse" />
                 </div>
                 <span className="text-xs font-semibold text-white">
-                  Uploading {uploadProgress.totalFiles} file{uploadProgress.totalFiles > 1 ? "s" : ""}
+                  {uploadProgress.phase === "cloud_upload" || uploadProgress.phase === "saving"
+                    ? "Saving cloud copy"
+                    : uploadProgress.phase === "assembling"
+                      ? "Preparing your file"
+                      : uploadProgress.phase === "finalizing"
+                        ? "Finishing upload"
+                        : uploadProgress.phase === "complete"
+                      ? "Upload complete"
+                      : uploadProgress.phase === "preparing"
+                        ? "Preparing upload"
+                        : `Uploading ${uploadProgress.totalFiles} file${uploadProgress.totalFiles > 1 ? "s" : ""}`}
                 </span>
               </div>
               <span className="text-xs font-mono font-bold text-emerald-400">
@@ -1254,8 +1705,51 @@ export default function CloudvaltApp() {
               />
             </div>
 
+            <div className="flex justify-between text-[10px] text-zinc-400 font-mono">
+              <span>{formatBytes(uploadProgress.uploadedBytes)} {uploadProgress.phase === "cloud_upload" ? "saved to cloud" : "transferred"}</span>
+              <span>{formatBytes(uploadProgress.totalBytes)} total</span>
+            </div>
+
             <div className="text-[11px] text-zinc-400 truncate font-mono">
-              {uploadProgress.currentFileName || "Syncing with Backblaze B2 S3 storage..."}
+              {uploadProgress.currentFileName || "Saving securely to your cloud vault..."}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Download Progress Toast */}
+      <AnimatePresence>
+        {downloadProgress && (
+          <motion.div
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 24 }}
+            className="fixed bottom-6 right-6 z-[60] w-80 rounded-2xl border border-zinc-700 bg-zinc-950 p-4 text-white shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <Download className="h-4 w-4 shrink-0 text-sky-400" />
+                <span className="truncate text-sm font-medium">Downloading {downloadProgress.name}</span>
+              </div>
+              <button
+                type="button"
+                aria-label="Cancel download"
+                title="Cancel download"
+                onClick={() => { downloadProgress.controller.abort(); setDownloadProgress(null); }}
+                className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+              >
+                <XCircle className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-sky-500 transition-[width] duration-150"
+                style={{ width: `${downloadProgress.total ? Math.min(100, (downloadProgress.loaded / downloadProgress.total) * 100) : 0}%` }}
+              />
+            </div>
+            <div className="mt-2 flex justify-between font-mono text-[10px] text-zinc-400">
+              <span>{formatBytes(downloadProgress.loaded)} downloaded</span>
+              <span>{downloadProgress.total ? `${Math.round((downloadProgress.loaded / downloadProgress.total) * 100)}%` : "Receiving…"}</span>
             </div>
           </motion.div>
         )}
@@ -1312,6 +1806,14 @@ export default function CloudvaltApp() {
             )}
             <span>{isUploading ? "Uploading..." : "Upload Photos & Videos"}</span>
           </motion.button>
+          <button
+            type="button"
+            onClick={() => setNewFolderOpen(true)}
+            disabled={isUploading}
+            className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-700 py-2 text-xs font-semibold text-zinc-200 hover:border-zinc-500 hover:bg-zinc-900 disabled:opacity-50"
+          >
+            <span className="text-base leading-none">+</span> Create Folder
+          </button>
         </div>
 
         <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
@@ -1323,6 +1825,9 @@ export default function CloudvaltApp() {
             { id: "audio", label: "Audio", icon: Music, count: stats?.categoryBreakdown?.audio?.count },
             { id: "archives", label: "Archives", icon: Archive, count: stats?.categoryBreakdown?.archive?.count },
             { id: "favorites", label: "Favorites", icon: Star, count: stats?.favoriteCount },
+            { id: "apps", label: "Apps", icon: Grid, highlight: true },
+            { id: "folders", label: "Folders", icon: Files },
+            { id: "trash", label: "Trash", icon: Trash2 },
           ].map((item) => {
             const Icon = item.icon;
             const isActive = activeCategory === item.id;
@@ -1331,6 +1836,7 @@ export default function CloudvaltApp() {
                 key={item.id}
                 onClick={() => {
                   setActiveCategory(item.id as FileCategory);
+                  setActiveFolderId(null);
                   setSelectedIds(new Set());
                 }}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -1471,11 +1977,21 @@ export default function CloudvaltApp() {
                 onClick={() => setShowUserDropdown((prev) => !prev)}
                 className="flex items-center gap-2 pl-2 pr-1 py-1 rounded-xl hover:bg-zinc-900 transition-colors text-left"
               >
-                {currentUser?.avatar ? (
+                {currentUser?.avatar && !currentUser.avatarFailed ? (
                   <img
                     src={currentUser.avatar}
                     alt={displayName}
                     className="h-8 w-8 rounded-full object-cover border border-zinc-700"
+                    onError={(event) => {
+                      const fallback = currentUser.avatarFallback;
+                      if (fallback && event.currentTarget.src !== fallback) {
+                        event.currentTarget.src = fallback;
+                      } else {
+                        const userWithoutAvatar = { ...currentUser, avatarFailed: true };
+                        setCurrentUser(userWithoutAvatar);
+                        setStoredUser(userWithoutAvatar);
+                      }
+                    }}
                   />
                 ) : (
                   <div className="h-8 w-8 rounded-full bg-zinc-900 border border-zinc-700 flex items-center justify-center font-bold text-xs text-white">
@@ -1581,13 +2097,13 @@ export default function CloudvaltApp() {
                     <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
                       {currentPlanName}
                     </span>
-                    <span className="text-[11px] text-zinc-400">· Backblaze B2 & Firestore Synced</span>
+                    <span className="text-[11px] text-zinc-400">· Cloud backup and library synced</span>
                   </div>
                   <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
                     Photos & Videos Vault
                   </h1>
                   <p className="text-xs text-zinc-400 mt-1">
-                    Store camera RAW photos and 4K video clips with zero compression on Backblaze B2.
+                    Store camera RAW photos and 4K video clips in your cloud vault, with their original quality preserved.
                   </p>
                 </div>
 
@@ -1699,6 +2215,20 @@ export default function CloudvaltApp() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pt-2">
                   {filteredAndSortedFiles.map((file) => {
                     const isSelected = selectedIds.has(file.id);
+                    if (file.isFolder) {
+                      return (
+                        <div key={file.id} className="relative rounded-2xl border border-zinc-800 bg-zinc-950 p-5 text-left hover:border-emerald-500/60 hover:bg-zinc-900">
+                          <button type="button" onClick={() => openFolder(file)} className="w-full text-left">
+                            <Files className="h-10 w-10 text-amber-300" />
+                            <span className="mt-4 block truncate pr-8 text-sm font-semibold text-white">{file.name}</span>
+                            <span className="mt-1 block text-xs text-zinc-400">Open folder</span>
+                          </button>
+                          <button type="button" title="Delete folder" aria-label={`Delete folder ${file.name}`} onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(file); }} className="absolute right-3 top-3 rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-400">
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      );
+                    }
                     const effectiveType = file.type && file.type !== "other" ? file.type : detectFileType(file.name, file.mimeType);
                     const isVideo = effectiveType === "video";
                     const isPhoto = effectiveType === "image";
@@ -1773,7 +2303,7 @@ export default function CloudvaltApp() {
                                 e.stopPropagation();
                                 setDeleteTarget(file);
                               }}
-                              title="Delete Permanently"
+                              title="Move to Trash"
                               className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-red-400 transition-colors"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
@@ -1791,19 +2321,19 @@ export default function CloudvaltApp() {
                     return (
                       <div
                         key={file.id}
-                        onClick={() => setPreviewFile(file)}
+                        onClick={() => file.isFolder ? openFolder(file) : setPreviewFile(file)}
                         className={`px-4 py-3 hover:bg-zinc-900/50 flex items-center justify-between gap-4 cursor-pointer transition-colors ${
                           isSelected ? "bg-zinc-900/80" : ""
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
-                          <button onClick={(e) => toggleSelect(file.id, e)} className="shrink-0 text-zinc-400">
+                          {file.isFolder ? <span className="w-4 shrink-0" /> : <button onClick={(e) => toggleSelect(file.id, e)} className="shrink-0 text-zinc-400">
                             {isSelected ? (
                               <CheckSquare className="h-4 w-4 text-white" />
                             ) : (
                               <Square className="h-4 w-4" />
                             )}
-                          </button>
+                          </button>}
                           <div className="h-10 w-10 rounded-xl bg-zinc-900 border border-zinc-800 shrink-0 overflow-hidden flex items-center justify-center">
                             {renderListMediaThumb(file, "h-10 w-10")}
                           </div>
@@ -1854,7 +2384,7 @@ export default function CloudvaltApp() {
                               e.stopPropagation();
                               setDeleteTarget(file);
                             }}
-                            title="Delete Permanently"
+                            title="Move to Trash"
                             className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition-colors"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -1867,11 +2397,11 @@ export default function CloudvaltApp() {
               )}
             </div>
           ) : (
-            <div className="space-y-6 max-w-7xl mx-auto">
+        <div className="space-y-6 max-w-7xl mx-auto">
               <div className="flex items-center justify-between flex-wrap gap-4">
                 <div className="flex items-center gap-3">
-                  <h2 className="text-2xl font-bold tracking-tight capitalize">
-                    {activeCategory}
+                  <h2 className="text-2xl font-bold tracking-tight">
+                    {activeFolderId ? files.find((file) => file.id === activeFolderId)?.name || "Your Folders" : activeCategory === "folders" ? "Your Folders" : activeCategory === "apps" ? "Apps" : activeCategory === "trash" ? "Trash" : activeCategory}
                   </h2>
                   <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 tabular-nums">
                     {filteredAndSortedFiles.length} item{filteredAndSortedFiles.length === 1 ? "" : "s"}
@@ -1879,18 +2409,43 @@ export default function CloudvaltApp() {
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
+                  {activeCategory === "folders" && (
+                    <>
+                      {activeFolderId && (
+                        <button onClick={() => setActiveFolderId(null)} className="rounded-lg border border-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:text-white">All folders</button>
+                      )}
+                      {activeFolderId && (
+                        <button onClick={() => fileInputRef.current?.click()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-900">Upload to this folder</button>
+                      )}
+                    </>
+                  )}
+                  {activeCategory === "apps" && (
+                    <input
+                      type="file"
+                      className="max-w-48 text-xs text-zinc-400 file:mr-2 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-black"
+                      onChange={(event) => {
+                        if (event.target.files) void handleFilesUpload(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  )}
+                  {activeCategory !== "folders" && activeFolderId && (
+                    <button onClick={() => { setActiveFolderId(null); setActiveCategory("folders"); }} className="rounded-lg border border-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:text-white">Back to folders</button>
+                  )}
                   {[
                     { id: "all", label: "All" },
+                    { id: "apps", label: "🧩 Apps" },
                     { id: "photos", label: "📸 Photos" },
                     { id: "videos", label: "🎥 Videos" },
                     { id: "audio", label: "🎵 Audio" },
                     { id: "documents", label: "📁 Docs" },
                     { id: "archives", label: "📦 Archives" },
                     { id: "favorites", label: "⭐ Starred" },
+                    { id: "folders", label: "📂 Your Folders" },
                   ].map((chip) => (
                     <button
                       key={chip.id}
-                      onClick={() => setActiveCategory(chip.id as FileCategory)}
+                      onClick={() => { setActiveCategory(chip.id as FileCategory); if (chip.id !== "all" && chip.id !== "apps") setActiveFolderId(null); }}
                       className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                         activeCategory === chip.id
                           ? "bg-white text-black border-white font-semibold"
@@ -1930,29 +2485,46 @@ export default function CloudvaltApp() {
                   ) : (
                     <Files className="h-12 w-12 text-zinc-400 mb-3" />
                   )}
-                  <h3 className="text-lg font-semibold text-white">No files found</h3>
+                  <h3 className="text-lg font-semibold text-white">{activeCategory === "trash" ? "Trash is empty" : "No files found"}</h3>
                   <p className="text-zinc-400 text-sm max-w-sm mt-1">
-                    {searchQuery
+                    {activeCategory === "trash"
+                      ? "Deleted files will stay here for 30 days so you can restore them."
+                      : searchQuery
                       ? "No files matched your search query. Try another keyword."
                       : "Start storing your photos and videos by uploading them now."}
                   </p>
-                  <button
+                  {activeCategory !== "trash" && <button
                     onClick={() => fileInputRef.current?.click()}
                     className="mt-5 bg-white text-black hover:bg-zinc-200 font-semibold text-sm px-5 py-2.5 rounded-xl transition-all"
                   >
                     Upload Files
-                  </button>
+                  </button>}
                 </div>
               ) : viewMode === "grid" ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   {filteredAndSortedFiles.map((file) => {
                     const isSelected = selectedIds.has(file.id);
 
+                    if (file.isFolder) {
+                      return (
+                        <div key={file.id} className="relative rounded-2xl border border-zinc-800 bg-zinc-950 p-5 text-left hover:border-emerald-500/60 hover:bg-zinc-900">
+                          <button type="button" onClick={() => openFolder(file)} className="w-full text-left">
+                            <Files className="h-10 w-10 text-amber-300" />
+                            <span className="mt-4 block truncate pr-8 text-sm font-semibold text-white">{file.name}</span>
+                            <span className="mt-1 block text-xs text-zinc-400">Open folder</span>
+                          </button>
+                          <button type="button" title="Delete folder" aria-label={`Delete folder ${file.name}`} onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(file); }} className="absolute right-3 top-3 rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-400">
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      );
+                    }
+
                     return (
                       <motion.div
                         key={file.id}
                         whileHover={{ y: -4 }}
-                        onClick={() => setPreviewFile(file)}
+                        onClick={() => file.isFolder ? openFolder(file) : setPreviewFile(file)}
                         className={`group relative rounded-2xl border p-3 flex flex-col justify-between transition-all cursor-pointer bg-zinc-950 hover:bg-zinc-900/80 ${
                           isSelected ? "border-white bg-zinc-900" : "border-zinc-900 hover:border-zinc-700"
                         }`}
@@ -1970,7 +2542,7 @@ export default function CloudvaltApp() {
                           </div>
                         </div>
 
-                        <div className="absolute top-2.5 right-2.5 z-20">
+                        {activeCategory !== "trash" && <div className="absolute top-2.5 right-2.5 z-20">
                           <button
                             onClick={(e) => toggleFavorite(file, e)}
                             className={`p-1.5 rounded-lg bg-black/60 hover:bg-black/90 transition-colors ${
@@ -1979,7 +2551,7 @@ export default function CloudvaltApp() {
                           >
                             <Star className="h-3.5 w-3.5" fill={file.isFavorite ? "currentColor" : "none"} />
                           </button>
-                        </div>
+                        </div>}
 
                         <div className="w-full h-36 rounded-xl bg-zinc-900/90 border border-zinc-800/80 flex items-center justify-center overflow-hidden mb-3 relative">
                           {renderGridMediaPreview(file)}
@@ -1996,6 +2568,11 @@ export default function CloudvaltApp() {
                         </div>
 
                         <div className="mt-3 pt-2.5 border-t border-zinc-900 flex items-center justify-end gap-1">
+                          {activeCategory === "trash" ? <>
+                            <span className="mr-auto text-[10px] text-zinc-500">{file.deletedAt ? `Auto-deletes ${formatDate(new Date(new Date(file.deletedAt).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString())}` : "In Trash"}</span>
+                            <button onClick={(event) => void restoreFile(file, event)} title="Restore" className="flex items-center gap-1 rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"><RotateCcw className="h-3.5 w-3.5" /> Restore</button>
+                            <button onClick={(event) => { event.stopPropagation(); setDeleteTarget(file); }} title="Delete permanently" className="p-1 text-zinc-400 hover:text-red-400"><Trash2 className="h-3.5 w-3.5" /></button>
+                          </> : <>
                           <button
                             onClick={(e) => downloadFile(file, e)}
                             title="Download"
@@ -2019,11 +2596,12 @@ export default function CloudvaltApp() {
                               e.stopPropagation();
                               setDeleteTarget(file);
                             }}
-                            title="Delete Permanently"
+                            title="Move to Trash"
                             className="p-1 rounded text-zinc-400 hover:text-red-400"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
+                          </>}
                         </div>
                       </motion.div>
                     );
@@ -2052,25 +2630,25 @@ export default function CloudvaltApp() {
                     return (
                       <div
                         key={file.id}
-                        onClick={() => setPreviewFile(file)}
+                        onClick={() => file.isFolder ? openFolder(file) : setPreviewFile(file)}
                         className={`grid grid-cols-12 px-4 py-3 border-b border-zinc-900/80 last:border-b-0 items-center text-sm cursor-pointer transition-colors ${
                           isSelected ? "bg-zinc-900" : "hover:bg-zinc-900/50"
                         }`}
                       >
                         <div className="col-span-6 flex items-center gap-3 min-w-0">
-                          <button onClick={(e) => toggleSelect(file.id, e)} className="shrink-0 text-zinc-400">
+                          {file.isFolder ? <span className="w-4 shrink-0" /> : <button onClick={(e) => toggleSelect(file.id, e)} className="shrink-0 text-zinc-400">
                             {isSelected ? (
                               <CheckSquare className="h-3.5 w-3.5 text-white" />
                             ) : (
                               <Square className="h-3.5 w-3.5" />
                             )}
-                          </button>
+                          </button>}
                           <div className="h-8 w-8 rounded-lg bg-zinc-900 border border-zinc-800 shrink-0 overflow-hidden flex items-center justify-center">
-                            {renderListMediaThumb(file, "h-8 w-8")}
+                            {file.isFolder ? <Files className="h-4 w-4 text-amber-300" /> : renderListMediaThumb(file, "h-8 w-8")}
                           </div>
                           <div className="min-w-0 truncate">
                             <span className="font-medium text-white truncate block">{file.name}</span>
-                            {file.resolution && (
+                          {file.resolution && (
                               <span className="text-[10px] text-zinc-500 font-mono block">
                                 {file.resolution}
                               </span>
@@ -2083,24 +2661,28 @@ export default function CloudvaltApp() {
                         </div>
 
                         <div className="col-span-2 text-xs text-zinc-400 font-mono">
-                          {formatBytes(file.size)}
+                          {file.isFolder ? "Folder" : formatBytes(file.size)}
                         </div>
 
                         <div className="col-span-2 flex items-center justify-end gap-2">
-                          <button
+                          {activeCategory === "trash" ? <>
+                            <button onClick={(event) => void restoreFile(file, event)} title="Restore file" className="rounded p-1.5 text-emerald-300 hover:bg-emerald-500/10"><RotateCcw className="h-4 w-4" /></button>
+                            <button onClick={(event) => { event.stopPropagation(); setDeleteTarget(file); }} title="Delete permanently" className="rounded p-1.5 text-zinc-400 hover:text-red-400"><Trash2 className="h-4 w-4" /></button>
+                          </> : <>
+                          {!file.isFolder && <button
                             onClick={(e) => toggleFavorite(file, e)}
                             className={`p-1.5 rounded ${
                               file.isFavorite ? "text-amber-400" : "text-zinc-400 hover:text-white"
                             }`}
                           >
                             <Star className="h-4 w-4" fill={file.isFavorite ? "currentColor" : "none"} />
-                          </button>
-                          <button
+                          </button>}
+                          {!file.isFolder && <button
                             onClick={(e) => downloadFile(file, e)}
                             className="p-1.5 rounded text-zinc-400 hover:text-white"
                           >
                             <Download className="h-4 w-4" />
-                          </button>
+                          </button>}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2116,11 +2698,12 @@ export default function CloudvaltApp() {
                               e.stopPropagation();
                               setDeleteTarget(file);
                             }}
-                            title="Delete Permanently"
+                            title="Move to Trash"
                             className="p-1.5 rounded text-zinc-400 hover:text-red-400"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
+                          </>}
                         </div>
                       </div>
                     );
@@ -2154,7 +2737,7 @@ export default function CloudvaltApp() {
                 onClick={handleBulkDelete}
                 className="text-red-400 hover:text-red-300 flex items-center gap-1.5 font-medium"
               >
-                <Trash2 className="h-4 w-4" /> Delete
+                <Trash2 className="h-4 w-4" /> {activeCategory === "trash" ? "Delete permanently" : "Move to Trash"}
               </button>
               <button
                 onClick={() => setSelectedIds(new Set())}
@@ -2204,7 +2787,7 @@ export default function CloudvaltApp() {
                       autoPlay
                       playsInline
                       src={previewFile.previewUrl || previewFile.url || `/api/files/${previewFile.id}`}
-                      poster={previewFile.thumbnailUrl || undefined}
+                      poster={getVideoPosterUrl(previewFile)}
                       className="max-h-full max-w-full rounded-xl"
                     >
                       Your browser does not support HTML5 video streaming.
@@ -2270,11 +2853,6 @@ export default function CloudvaltApp() {
                 <div className="flex items-center justify-between border-t border-zinc-900 pt-4">
                   <div className="text-xs text-zinc-400 font-mono">
                     <div>Uploaded: {formatDate(previewFile.uploadedAt)}</div>
-                    {previewFile.b2FileName && (
-                      <div className="text-[10px] text-zinc-500 truncate max-w-sm">
-                        Backblaze B2: {previewFile.b2FileName}
-                      </div>
-                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <button
@@ -2400,7 +2978,7 @@ export default function CloudvaltApp() {
                       onClick={() => handleUpgradePlan("50gb")}
                       className="mt-4 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs py-2 rounded-xl transition-all"
                     >
-                      {currentUser?.planId === "50gb" ? "Current Tier" : "Select 50 GB"}
+                      {currentUser?.planId === "50gb" ? "Current Tier" : "Continue to checkout"}
                     </button>
                   </motion.div>
 
@@ -2436,7 +3014,7 @@ export default function CloudvaltApp() {
                       onClick={() => handleUpgradePlan("250gb")}
                       className="mt-4 w-full bg-emerald-400 hover:bg-emerald-300 text-black font-extrabold text-xs py-2 rounded-xl transition-all shadow-md shadow-emerald-400/20"
                     >
-                      {currentUser?.planId === "250gb" ? "Current Tier" : "Select 250 GB"}
+                      {currentUser?.planId === "250gb" ? "Current Tier" : "Continue to checkout"}
                     </button>
                   </motion.div>
 
@@ -2469,13 +3047,13 @@ export default function CloudvaltApp() {
                       onClick={() => handleUpgradePlan("1tb")}
                       className="mt-4 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs py-2 rounded-xl transition-all"
                     >
-                      {currentUser?.planId === "1tb" ? "Current Tier" : "Select 1 TB"}
+                      {currentUser?.planId === "1tb" ? "Current Tier" : "Continue to checkout"}
                     </button>
                   </motion.div>
                 </div>
 
                 <div className="flex items-center justify-between text-xs text-zinc-500 border-t border-zinc-900 pt-4">
-                  <span>Synced with Firebase Firestore (cloudvalt.site)</span>
+                  <span>Your account and library are synced</span>
                   <button
                     onClick={() => setShowUpgradeModal(false)}
                     className="text-zinc-400 hover:text-white"
@@ -2528,10 +3106,12 @@ export default function CloudvaltApp() {
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
               <h3 className="text-lg font-bold text-white mb-2">
-                Permanently Delete File?
+                {activeCategory === "trash" ? "Permanently delete file?" : "Move file to Trash?"}
               </h3>
               <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
-                Are you sure you want to permanently delete <strong className="text-white">"{deleteTarget.name}"</strong>? This file will be immediately purged from your vault and Backblaze B2 cloud storage. This action cannot be undone.
+                {activeCategory === "trash"
+                  ? <>Permanently delete <strong className="text-white">“{deleteTarget.name}”</strong> from your account and cloud storage? This cannot be undone.</>
+                  : <>Move <strong className="text-white">“{deleteTarget.name}”</strong> to Trash? You can restore it for 30 days before permanently deleting it.</>}
               </p>
               <div className="flex items-center justify-end gap-2">
                 <button
@@ -2544,10 +3124,27 @@ export default function CloudvaltApp() {
                 <button
                   type="button"
                   onClick={confirmDelete}
-                  className="px-4 py-2 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold flex items-center gap-1.5 shadow-sm"
+                  className={`px-4 py-2 text-xs rounded-lg text-white font-semibold flex items-center gap-1.5 shadow-sm ${activeCategory === "trash" ? "bg-red-600 hover:bg-red-500" : "bg-zinc-700 hover:bg-zinc-600"}`}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  <span>Delete Permanently</span>
+                  <span>{activeCategory === "trash" ? "Delete Permanently" : "Move to Trash"}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {deleteFolderTarget && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+              <h3 className="text-lg font-bold text-white mb-2">Delete folder?</h3>
+              <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+                Delete <strong className="text-white">“{deleteFolderTarget.name}”</strong>? The files and nested folders inside will be kept and moved to its parent folder.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button type="button" onClick={() => setDeleteFolderTarget(null)} className="px-4 py-2 text-xs rounded-lg border border-zinc-800 hover:bg-zinc-900 text-zinc-300">Cancel</button>
+                <button type="button" onClick={() => void confirmDeleteFolder()} className="px-4 py-2 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold flex items-center gap-1.5 shadow-sm">
+                  <Trash2 className="h-3.5 w-3.5" /> Delete folder
                 </button>
               </div>
             </div>
@@ -2607,12 +3204,12 @@ export default function CloudvaltApp() {
                   <span className="font-mono text-zinc-300">{displayEmail}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-zinc-900/60">
-                  <span>File Storage Engine</span>
-                  <span className="text-emerald-400 font-semibold">Backblaze B2 (S3-Compatible)</span>
+                  <span>Cloud Storage</span>
+                  <span className="text-emerald-400 font-semibold">Secure cloud vault</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-zinc-900/60">
-                  <span>Database Tables</span>
-                  <span className="text-emerald-400 font-semibold">Firestore /users & /files</span>
+                  <span>Library</span>
+                  <span className="text-emerald-400 font-semibold">Synced across your account</span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span>Encryption Standard</span>
@@ -2703,7 +3300,14 @@ export default function CloudvaltApp() {
                     />
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 pt-2">
+                  <div className="flex items-center justify-between gap-2 pt-2">
+                    <a
+                      href="mailto:ip624217@gmail.com?subject=Cloudvalt%20Support"
+                      className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300"
+                    >
+                      <Mail className="h-3.5 w-3.5" /> Contact support
+                    </a>
+                    <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setShowFeedback(false)}
@@ -2713,11 +3317,13 @@ export default function CloudvaltApp() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowFeedback(true)}
-                      className="px-4 py-2 text-xs rounded-lg bg-white text-black hover:bg-zinc-200 font-semibold"
+                      onClick={submitFeedback}
+                      disabled={isSubmittingFeedback}
+                      className="px-4 py-2 text-xs rounded-lg bg-white text-black hover:bg-zinc-200 disabled:opacity-50 font-semibold"
                     >
-                      Submit Feedback
+                      {isSubmittingFeedback ? "Sending…" : "Submit Feedback"}
                     </button>
+                    </div>
                   </div>
                 </div>
               )}
