@@ -25,7 +25,7 @@ const s3 = new S3Client({
   forcePathStyle: true,
 });
 
-const origins = (process.env.CLOUDVALT_CORS_ORIGINS || 'http://localhost:3000')
+const origins = (process.env.CLOUDVALT_CORS_ORIGINS || 'http://localhost:3000,https://cloudvalt-site.pages.dev')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
