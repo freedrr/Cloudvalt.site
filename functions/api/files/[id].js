@@ -122,25 +122,26 @@ function b2ClientConfig(env) {
 
 async function deleteB2ObjectAndVersions(env, objectKey) {
   const config = b2ClientConfig(env);
-  const endpoint = new URL(config.endpoint);
-  const bucket = env.B2_BUCKET_NAME;
-  const basePath = `${endpoint.pathname.replace(/\/$/, "")}/${encodeURIComponent(bucket)}/${objectKey.split("/").map(encodeURIComponent).join("/")}`;
-  const versionsUrl = new URL(`${endpoint.origin}${basePath}`);
-  versionsUrl.searchParams.set("versions", "");
-  versionsUrl.searchParams.set("prefix", objectKey);
-  const listResponse = await fetch(versionsUrl, {
-    headers: { "x-bz-info-src_last_modified_millis": "0" },
-  });
-  if (!listResponse.ok) throw new Error(`B2 list versions returned HTTP ${listResponse.status}.`);
-  const versions = parseObjectVersions(await listResponse.text(), objectKey);
-
-  const { S3Client, DeleteObjectsCommand, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+  const { S3Client, DeleteObjectsCommand, DeleteObjectCommand, ListObjectVersionsCommand } = await import("@aws-sdk/client-s3");
   const client = new S3Client(config);
   try {
+    // Use the SDK's signed S3 request, but read its raw XML response because
+    // the SDK's default XML parser requires DOMParser, which Workers lack.
+    const listCommand = new ListObjectVersionsCommand({ Bucket: env.B2_BUCKET_NAME, Prefix: objectKey });
+    const request = await client.middlewareStack.resolve(
+      async (args) => ({ response: await client.config.requestHandler.handle(args.request), output: {} }),
+      client.middlewareStack.concat(listCommand.middlewareStack, "ListObjectVersionsCommand"),
+    )({ input: listCommand.input });
+    const rawResponse = request.response;
+    const rawXml = await new Response(rawResponse.body).text();
+    if (rawResponse.statusCode < 200 || rawResponse.statusCode >= 300) {
+      throw new Error(`B2 list versions returned HTTP ${rawResponse.statusCode}.`);
+    }
+    const versions = parseObjectVersions(rawXml, objectKey);
     if (versions.length) {
-      await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: versions, Quiet: false } }));
+      await client.send(new DeleteObjectsCommand({ Bucket: env.B2_BUCKET_NAME, Delete: { Objects: versions, Quiet: false } }));
     } else {
-      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
+      await client.send(new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: objectKey }));
     }
   } finally {
     client.destroy();
