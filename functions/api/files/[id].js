@@ -93,6 +93,60 @@ function firestoreDocumentData(document) {
   return Object.fromEntries(Object.entries(document?.fields || {}).map(([key, value]) => [key, firestoreValue(value)]));
 }
 
+function xmlDecode(value) {
+  return value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+
+function parseObjectVersions(xml, targetKey) {
+  const objects = [];
+  const itemPattern = /<(Version|DeleteMarker)>([\s\S]*?)<\/\1>/g;
+  for (const match of xml.matchAll(itemPattern)) {
+    const block = match[2];
+    const key = block.match(/<Key>([\s\S]*?)<\/Key>/)?.[1];
+    const versionId = block.match(/<VersionId>([\s\S]*?)<\/VersionId>/)?.[1];
+    if (key && versionId && xmlDecode(key) === targetKey) objects.push({ Key: targetKey, VersionId: xmlDecode(versionId) });
+  }
+  return objects;
+}
+
+function b2ClientConfig(env) {
+  const region = env.B2_REGION || "us-east-005";
+  return {
+    endpoint: env.B2_ENDPOINT || `https://s3.${region}.backblazeb2.com`,
+    region,
+    credentials: { accessKeyId: env.B2_KEY_ID, secretAccessKey: env.B2_APPLICATION_KEY },
+    forcePathStyle: true,
+  };
+}
+
+async function deleteB2ObjectAndVersions(env, objectKey) {
+  const config = b2ClientConfig(env);
+  const endpoint = new URL(config.endpoint);
+  const bucket = env.B2_BUCKET_NAME;
+  const basePath = `${endpoint.pathname.replace(/\/$/, "")}/${encodeURIComponent(bucket)}/${objectKey.split("/").map(encodeURIComponent).join("/")}`;
+  const versionsUrl = new URL(`${endpoint.origin}${basePath}`);
+  versionsUrl.searchParams.set("versions", "");
+  versionsUrl.searchParams.set("prefix", objectKey);
+  const listResponse = await fetch(versionsUrl, {
+    headers: { "x-bz-info-src_last_modified_millis": "0" },
+  });
+  if (!listResponse.ok) throw new Error(`B2 list versions returned HTTP ${listResponse.status}.`);
+  const versions = parseObjectVersions(await listResponse.text(), objectKey);
+
+  const { S3Client, DeleteObjectsCommand, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+  const client = new S3Client(config);
+  try {
+    if (versions.length) {
+      await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: versions, Quiet: false } }));
+    } else {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
+    }
+  } finally {
+    client.destroy();
+  }
+}
+
 export async function onRequest(context) {
   try {
     if (context.request.method === "DELETE") {
@@ -123,18 +177,8 @@ export async function onRequest(context) {
       if (fileData.storedInB2 && !objectKey) return json({ success: false, error: "The cloud file key is missing; file was not deleted." }, 409);
       if (objectKey) {
         if (!objectKey.startsWith(`users/${uid}/`)) return json({ success: false, error: "File key does not belong to this account." }, 403);
-        const [{ S3Client, DeleteObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand }] = await Promise.all([import("@aws-sdk/client-s3")]);
-        const region = context.env.B2_REGION || "us-east-005";
-        const client = new S3Client({ endpoint: context.env.B2_ENDPOINT || `https://s3.${region}.backblazeb2.com`, region, credentials: { accessKeyId: context.env.B2_KEY_ID, secretAccessKey: context.env.B2_APPLICATION_KEY }, forcePathStyle: true });
         try {
-          const bucket = context.env.B2_BUCKET_NAME;
-          const listed = await client.send(new ListObjectVersionsCommand({ Bucket: bucket, Prefix: objectKey }));
-          const versions = [...(listed.Versions || []), ...(listed.DeleteMarkers || [])].filter(item => item.Key === objectKey && item.VersionId);
-          if (versions.length) {
-            await client.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: versions.map(item => ({ Key: objectKey, VersionId: item.VersionId })), Quiet: false } }));
-          } else {
-            await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
-          }
+          await deleteB2ObjectAndVersions(context.env, objectKey);
         } catch (error) {
           const errorName = error?.name || error?.Code || "B2Error";
           const errorMessage = error instanceof Error ? error.message : String(error || "Unknown B2 error");
@@ -145,8 +189,6 @@ export async function onRequest(context) {
             error: `Cloud storage could not delete the file (${errorName}): ${errorMessage}`,
             storageRequestId: requestId,
           }, 502);
-        } finally {
-          client.destroy();
         }
       }
 
