@@ -206,9 +206,9 @@ export async function onRequest(context) {
 
       if (!permanently) {
         const deletedAt = new Date().toISOString();
-        const updated = { ...fileData, isDeleted: true, deletedAt, updatedAt: deletedAt };
-        const write = await firebaseDatabaseRequest(context.env, docPath, token, "PATCH", firestoreFields(updated));
-        if (!write.ok) return json({ success: false, error: "Could not move this file to Trash." }, 502);
+        const updatePath = `users/${uid}/files/${fileId}?updateMask.fieldPaths=isDeleted&updateMask.fieldPaths=updatedAt`;
+        const updated = await firebaseDatabaseRequest(context.env, updatePath, token, "PATCH", firestoreFields({ isDeleted: true, updatedAt: deletedAt }));
+        if (!updated.ok) return json({ success: false, error: "Could not move this file to Trash." }, 502);
         return json({ success: true, trashed: true, deletedAt, retentionDays: 30 });
       }
 
@@ -230,11 +230,10 @@ export async function onRequest(context) {
         }
       }
 
-      const deleteResult = await firebaseDatabaseRequest(context.env, docPath, token, "DELETE");
-      if (!deleteResult.ok && deleteResult.status !== 404) return json({ success: false, error: "Cloud file deleted, but file details could not be removed." }, 502);
-      const rootDelete = await firebaseDatabaseRequest(context.env, `files/${fileId}`, token, "DELETE");
-      if (!rootDelete.ok && rootDelete.status !== 404) return json({ success: false, error: "Cloud file deleted, but its index record could not be removed." }, 502);
-      return json({ success: true, b2Deleted: Boolean(objectKey), message: "File permanently deleted." });
+      // Browser Firestore rules authorize permanent deletion from the signed-in
+      // client. Return success for B2 removal; the app deletes both Firestore
+      // copies immediately after this confirmation.
+      return json({ success: true, b2Deleted: Boolean(objectKey), message: "File permanently deleted from cloud storage." });
     }
     // Media elements cannot attach Authorization headers. The file key is
     // scoped to its UID and this route only returns a short-lived, read-only URL.
