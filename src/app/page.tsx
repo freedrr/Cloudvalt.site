@@ -631,7 +631,7 @@ export default function CloudvaltApp() {
       request.onerror = () => reject(new Error("Network error while uploading a file part."));
       request.onload = () => {
         if (request.status < 200 || request.status >= 300) {
-          uploadError = { status: request.status, data: { error: "B2 rejected this file part." } };
+          uploadError = { status: request.status, data: { error: `Cloud storage rejected this file part (HTTP ${request.status}). Check the B2 CORS rule and multipart URL signature.` } };
           reject(new Error("Cloud storage rejected this file part."));
           return;
         }
@@ -695,22 +695,6 @@ export default function CloudvaltApp() {
         })),
       }),
     }).finally(() => { completionReturned = true; });
-
-    let serverFinished = false;
-    while (!serverFinished && !completionReturned) {
-      try {
-        const statusResponse = await fetch(`/api/upload/chunk/${encodeURIComponent(uploadId)}/status`, { headers });
-        if (!statusResponse.ok) break;
-        const status = await statusResponse.json();
-        if (status.phase === "assembling") onPhase("assembling", 0, file.size);
-        else if (status.phase === "cloud_upload") onPhase("cloud_upload", Number(status.cloudUploadedBytes) || 0, file.size);
-        else if (status.phase === "finalizing") onPhase("finalizing", file.size, file.size);
-        else if (status.phase === "complete" || status.phase === "error") serverFinished = true;
-      } catch {
-        // Keep waiting for the completion response if the status request fails.
-      }
-      if (!serverFinished) await new Promise((resolve) => setTimeout(resolve, 700));
-    }
 
     const completeRes = await completePromise;
     const completeData = await completeRes.json().catch(() => ({}));
