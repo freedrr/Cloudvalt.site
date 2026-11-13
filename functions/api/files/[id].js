@@ -1,5 +1,5 @@
-// Private-file delivery endpoint. It creates a fresh, short-lived B2 read URL
-// for each request and redirects the browser; file bytes stay in B2.
+// Private-file delivery endpoint. It creates a fresh B2 read URL for each
+// request and streams the response through this same origin for preview CORS.
 
 let firebaseKeys = { expires: 0, keys: {} };
 const encoder = new TextEncoder();
@@ -69,8 +69,15 @@ export async function onRequest(context) {
       return new Response("File could not be found.", { status: 404 });
     }
     const signedUrl = await createReadUrl(context.env, context.env.B2_BUCKET_NAME, objectKey);
-    if (requestedMethod === "HEAD") return fetch(signedUrl, { method: "HEAD" });
-    return Response.redirect(signedUrl, 302);
+    const upstream = await fetch(signedUrl, { method: requestedMethod === "HEAD" ? "HEAD" : "GET" });
+    if (!upstream.ok) return new Response("File preview could not be loaded.", { status: upstream.status });
+    const headers = new Headers();
+    for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    headers.set("cache-control", "private, no-store");
+    return new Response(requestedMethod === "HEAD" ? null : upstream.body, { status: upstream.status, headers });
   } catch (error) {
     console.error("Private file read URL could not be created:", error instanceof Error ? error.message : error);
     return new Response("File preview is temporarily unavailable.", { status: 502 });

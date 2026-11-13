@@ -1056,15 +1056,11 @@ export default function CloudvaltApp() {
     const permanently = activeCategory === "trash";
 
     try {
-      const deleteUrl =
-        `/api/files/${encodeURIComponent(deleteTarget.id)}?permanent=${permanently}` +
-        (currentUser?.id
-          ? `&userId=${encodeURIComponent(currentUser.id)}`
-          : "") +
-        (deleteTarget.b2FileName
-          ? `&b2FileName=${encodeURIComponent(deleteTarget.b2FileName)}`
-          : "") +
-        (deleteTarget.storedInB2 ? "&storedInB2=true" : "");
+      const deleteParams = new URLSearchParams({ permanent: String(permanently) });
+      if (currentUser?.id) deleteParams.set("userId", currentUser.id);
+      if (deleteTarget.b2FileName) deleteParams.set("b2FileName", deleteTarget.b2FileName);
+      if (deleteTarget.storedInB2) deleteParams.set("storedInB2", "true");
+      const deleteUrl = `/api/files/${encodeURIComponent(deleteTarget.id)}?${deleteParams.toString()}`;
 
       const res = await fetch(deleteUrl, { 
         method: "DELETE",
@@ -1258,15 +1254,11 @@ export default function CloudvaltApp() {
     for (const id of ids) {
       try {
         const file = files.find(f => f.id === id);
-        const url =
-          `/api/files/${encodeURIComponent(id)}?permanent=${permanently}` +
-          (currentUser?.id
-            ? `&userId=${encodeURIComponent(currentUser.id)}`
-            : "") +
-          (file?.b2FileName
-            ? `&b2FileName=${encodeURIComponent(file.b2FileName)}`
-            : "") +
-          (file?.storedInB2 ? "&storedInB2=true" : "");
+        const deleteParams = new URLSearchParams({ permanent: String(permanently) });
+        if (currentUser?.id) deleteParams.set("userId", currentUser.id);
+        if (file?.b2FileName) deleteParams.set("b2FileName", file.b2FileName);
+        if (file?.storedInB2) deleteParams.set("storedInB2", "true");
+        const url = `/api/files/${encodeURIComponent(id)}?${deleteParams.toString()}`;
 
         const res = await fetch(url, { 
           method: "DELETE",
