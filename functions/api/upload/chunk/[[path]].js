@@ -132,12 +132,15 @@ async function readSession(env, token, uid) {
 
 async function firebaseUser(request, env) {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  if (!token || !env.FIREBASE_PROJECT_ID) throw new Error("Sign in is required.");
+  // The project ID is public client configuration. Keeping this fallback means
+  // a missing Pages variable cannot accidentally take the upload service down.
+  const projectId = env.FIREBASE_PROJECT_ID || "strange-bird-467010-q9";
+  if (!token) throw new Error("Sign in is required.");
   const [headerPart, payloadPart, signaturePart] = token.split(".");
   if (!headerPart || !payloadPart || !signaturePart) throw new Error("Invalid sign-in token.");
   const header = JSON.parse(textFromBase64Url(headerPart));
   const payload = JSON.parse(textFromBase64Url(payloadPart));
-  if (header.alg !== "RS256" || !header.kid || payload.aud !== env.FIREBASE_PROJECT_ID || payload.iss !== `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}` || !payload.sub || payload.exp * 1000 < Date.now()) throw new Error("Your sign-in has expired.");
+  if (header.alg !== "RS256" || !header.kid || payload.aud !== projectId || payload.iss !== `https://securetoken.google.com/${projectId}` || !payload.sub || payload.exp * 1000 < Date.now()) throw new Error("Your sign-in has expired.");
   if (firebaseKeys.expires < Date.now()) {
     const response = await fetch("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com");
     if (!response.ok) throw new Error("Could not verify your sign-in.");
