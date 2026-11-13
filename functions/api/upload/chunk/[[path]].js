@@ -5,6 +5,31 @@
 const encoder = new TextEncoder();
 let firebaseKeys = { expires: 0, keys: {} };
 
+async function presignedPartUrl(env, key, uploadId, partNumber) {
+  const [{ S3Client }, { UploadPartCommand }, { getSignedUrl }] = await Promise.all([
+    import("@aws-sdk/client-s3"),
+    import("@aws-sdk/client-s3"),
+    import("@aws-sdk/s3-request-presigner"),
+  ]);
+  const config = b2Config(env);
+  const client = new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    credentials: { accessKeyId: config.keyId, secretAccessKey: config.secret },
+    forcePathStyle: true,
+  });
+  try {
+    return await getSignedUrl(client, new UploadPartCommand({
+      Bucket: config.bucket,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+    }), { expiresIn: 3600 });
+  } finally {
+    client.destroy();
+  }
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -92,28 +117,6 @@ async function b2Request(env, method, key, queryEntries = [], body = "", extraHe
   const signature = [...await hmac(await signingKey(config.secret, dateStamp, config.region), stringToSign)].map(byte => byte.toString(16).padStart(2, "0")).join("");
   const url = `${config.endpoint}${canonicalUri}${query ? `?${query}` : ""}`;
   return fetch(url, { method, headers: { ...headers, Authorization: `AWS4-HMAC-SHA256 Credential=${config.keyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}` }, body: body || undefined });
-}
-
-async function presignedPartUrl(env, key, uploadId, partNumber) {
-  const config = b2Config(env);
-  const endpoint = new URL(config.endpoint);
-  const { amzDate, dateStamp } = timestamp();
-  const scope = `${dateStamp}/${config.region}/s3/aws4_request`;
-  const queryEntries = [
-    ["partNumber", partNumber], ["uploadId", uploadId], ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
-    ["X-Amz-Credential", `${config.keyId}/${scope}`], ["X-Amz-Date", amzDate], ["X-Amz-Expires", "3600"], ["X-Amz-SignedHeaders", "host"],
-  ];
-  // The SDK signer used by the local server signs uploadId and partNumber as
-  // protocol query parameters, but leaves them outside the presigned auth
-  // query string. Keep the canonical ordering explicit for B2 compatibility.
-  const canonicalUri = objectPath(config.bucket, key);
-  const authEntries = queryEntries.filter(([name]) => name !== "partNumber" && name !== "uploadId");
-  const signedQuery = canonicalQuery(authEntries);
-  const canonicalQueryString = `${canonicalQuery([["partNumber", partNumber], ["uploadId", uploadId]])}&${signedQuery}`;
-  const canonicalRequest = ["PUT", canonicalUri, canonicalQueryString, `host:${endpoint.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, await sha256Hex(canonicalRequest)].join("\n");
-  const signature = [...await hmac(await signingKey(config.secret, dateStamp, config.region), stringToSign)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  return `${config.endpoint}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
 }
 
 async function signedSession(env, payload) {
