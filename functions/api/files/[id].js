@@ -56,6 +56,12 @@ async function createReadUrl(env, bucket, key) {
 
 export async function onRequest(context) {
   try {
+    if (context.request.method === "DELETE") {
+      return new Response(JSON.stringify({ success: false, error: "File deletion is not available on this deployment yet." }), {
+        status: 501,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     // Media elements cannot attach Authorization headers. The file key is
     // scoped to its UID and this route only returns a short-lived, read-only URL.
     const uid = await verifyUser(context.request, context.env);
