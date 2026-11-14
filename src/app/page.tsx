@@ -206,6 +206,7 @@ export default function CloudvaltApp() {
     }
   };
   const openFolder = (folder: CloudFile) => {
+    if (activeCategory === "trash" || folder.isDeleted) return;
     setActiveCategory("all");
     setActiveFolderId(folder.id);
     setSelectedIds(new Set());

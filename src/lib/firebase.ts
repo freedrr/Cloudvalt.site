@@ -562,9 +562,19 @@ export async function getUserFilesFromFirestore(
       favoriteCount,
     };
 
-    let filtered = category === "trash"
-      ? allFiles.filter((f) => f.isDeleted)
-      : allFiles.filter((f) => !f.isDeleted);
+    let filtered: CloudFile[];
+    if (category === "trash") {
+      const trashedFolderIds = new Set(folders.filter((folder) => folder.isDeleted).map((folder) => folder.id));
+      const topLevelTrashedFolders = folders.filter((folder) =>
+        folder.isDeleted && (!folder.folderId || !trashedFolderIds.has(folder.folderId))
+      );
+      const individuallyTrashedFiles = fileRecords.filter((file) =>
+        file.isDeleted && (!file.folderId || !trashedFolderIds.has(file.folderId))
+      );
+      filtered = [...topLevelTrashedFolders, ...individuallyTrashedFiles];
+    } else {
+      filtered = allFiles.filter((file) => !file.isDeleted);
+    }
 
     if (category === "folders") {
       filtered = filtered.filter((f) => f.isFolder);
