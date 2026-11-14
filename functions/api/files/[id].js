@@ -110,6 +110,20 @@ function parseObjectVersions(xml, targetKey) {
   return objects;
 }
 
+function parseIsTruncated(xml) {
+  return /<IsTruncated>true<\/IsTruncated>/i.test(xml);
+}
+
+function parseNextKeyMarker(xml) {
+  const value = xml.match(/<NextKeyMarker>([\s\S]*?)<\/NextKeyMarker>/)?.[1];
+  return value ? xmlDecode(value) : null;
+}
+
+function parseNextVersionMarker(xml) {
+  const value = xml.match(/<NextVersionIdMarker>([\s\S]*?)<\/NextVersionIdMarker>/)?.[1];
+  return value ? xmlDecode(value) : null;
+}
+
 function b2ClientConfig(env) {
   const region = env.B2_REGION || "us-east-005";
   return {
@@ -164,17 +178,57 @@ async function signS3Request(env, method, queryEntries) {
   return { url: `${endpoint.origin}${key}?${query}`, headers: { host: endpoint.host, "x-amz-content-sha256": "UNSIGNED-PAYLOAD", "x-amz-date": amzDate, Authorization: authorization } };
 }
 
-async function deleteB2ObjectAndVersions(env, objectKey) {
+async function deleteB2VersionsRaw(env, versions) {
   const config = b2ClientConfig(env);
-  const { S3Client, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
-  const client = new S3Client(config);
-  try {
-    // B2 S3 DeleteObject removes the current version by creating a marker in
-    // versioned buckets. For non-versioned buckets it permanently removes the
-    // object. Avoid XML listing here because Workers lack DOMParser.
-    await client.send(new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: objectKey }));
-  } finally {
-    client.destroy();
+  const endpoint = new URL(config.endpoint);
+  const bucketPath = `${endpoint.pathname.replace(/\/$/, "")}/${awsEncode(env.B2_BUCKET_NAME)}`;
+  const xmlEscape = value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  const body = `<Delete>${versions.map(({ Key, VersionId }) => `<Object><Key>${xmlEscape(Key)}</Key><VersionId>${xmlEscape(VersionId)}</VersionId></Object>`).join("")}<Quiet>false</Quiet></Delete>`;
+  const payloadHash = await sha256Hex(body);
+  const date = new Date();
+  const amzDate = date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const dateStamp = amzDate.slice(0, 8);
+  const scope = `${dateStamp}/${config.region}/s3/aws4_request`;
+  const contentMd5 = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("MD5", encoder.encode(body)))));
+  const signedHeaders = "content-md5;content-type;host;x-amz-content-sha256;x-amz-date";
+  const headers = { "content-md5": contentMd5, "content-type": "application/xml", host: endpoint.host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate };
+  const canonicalHeaders = `content-md5:${contentMd5}\ncontent-type:application/xml\nhost:${endpoint.host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+  const canonicalRequest = ["POST", bucketPath, "delete=", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, await sha256Hex(canonicalRequest)].join("\n");
+  const dateKey = await hmac(`AWS4${config.credentials.secretAccessKey}`, dateStamp);
+  const regionKey = await hmac(dateKey, config.region);
+  const serviceKey = await hmac(regionKey, "s3");
+  const signingKey = await hmac(serviceKey, "aws4_request");
+  const signature = [...await hmac(signingKey, stringToSign)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  headers.Authorization = `AWS4-HMAC-SHA256 Credential=${config.credentials.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const response = await fetch(`${endpoint.origin}${bucketPath}?delete`, { method: "POST", headers, body });
+  const responseXml = await response.text();
+  if (!response.ok || /<Error>/i.test(responseXml)) {
+    const message = responseXml.match(/<Message>([^<]*)<\/Message>/)?.[1] || `B2 returned HTTP ${response.status}`;
+    throw new Error(xmlEscape(message));
+  }
+}
+
+async function deleteB2ObjectAndVersions(env, objectKey) {
+  let keyMarker = "";
+  let versionIdMarker = "";
+  const allVersions = [];
+  for (let page = 0; page < 100; page += 1) {
+    const query = [["versions", ""], ["prefix", objectKey]];
+    if (keyMarker) query.push(["key-marker", keyMarker]);
+    if (versionIdMarker) query.push(["version-id-marker", versionIdMarker]);
+    const signedList = await signS3Request(env, "GET", query);
+    const listed = await fetch(signedList.url, { headers: signedList.headers });
+    const xml = await listed.text();
+    if (!listed.ok) throw new Error(`B2 list versions returned HTTP ${listed.status}: ${xml.match(/<Message>([^<]*)<\/Message>/)?.[1] || "request rejected"}`);
+    allVersions.push(...parseObjectVersions(xml, objectKey));
+    if (!parseIsTruncated(xml)) break;
+    keyMarker = parseNextKeyMarker(xml) || objectKey;
+    versionIdMarker = parseNextVersionMarker(xml) || "";
+    if (page === 99) throw new Error("Too many B2 versions to delete in one operation; retry after cleanup.");
+  }
+  for (let index = 0; index < allVersions.length; index += 1000) {
+    await deleteB2VersionsRaw(env, allVersions.slice(index, index + 1000));
   }
 }
 
