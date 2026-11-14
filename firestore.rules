@@ -133,6 +133,9 @@ service cloud.firestore {
           && incoming().name.size() <= 120
           && incoming().size is number
           && incoming().size >= 0
+          && (!('isDeleted' in incoming()) || incoming().isDeleted is bool)
+          && (!('deletedAt' in incoming()) || incoming().deletedAt == null || (incoming().deletedAt is string && incoming().deletedAt.size() <= 40))
+          && (!('parentFolderId' in incoming()) || incoming().parentFolderId == null || (incoming().parentFolderId is string && incoming().parentFolderId.size() <= 128))
           && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'parentFolderId', 'size', 'updatedAt', 'isDeleted', 'deletedAt']);
         allow delete: if isOwner(userId) && isValidId(folderId);
       }

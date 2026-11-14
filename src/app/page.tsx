@@ -1134,7 +1134,7 @@ export default function CloudvaltApp() {
         const outcome = await deleteUserFolderInFirestore(currentUser.id, folder.id, folder.folderId || null);
         showNotification(outcome.trashedFiles
           ? `Folder and ${outcome.trashedFiles} file${outcome.trashedFiles === 1 ? "" : "s"} moved to Trash together.`
-          : "Empty folder deleted.");
+          : "Empty folder moved to Trash. You can restore it from Trash.");
       } else {
         const query = currentUser?.id ? `?userId=${encodeURIComponent(currentUser.id)}` : "";
         const response = await fetch(`/api/folders/${encodeURIComponent(folder.id)}${query}`, {
@@ -1314,10 +1314,12 @@ export default function CloudvaltApp() {
 
   // Filter & Sort
   const filteredAndSortedFiles = useMemo(() => {
-    let result = activeCategory === "folders"
-      ? files.filter((file) => (file.folderId || null) === activeFolderId
-        && (activeFolderId ? true : Boolean(file.isFolder)))
-      : files.filter((file) => !file.isFolder && (!activeFolderId || file.folderId === activeFolderId));
+    let result = activeCategory === "trash"
+      ? [...files]
+      : activeCategory === "folders"
+        ? files.filter((file) => (file.folderId || null) === activeFolderId
+          && (activeFolderId ? true : Boolean(file.isFolder)))
+        : files.filter((file) => !file.isFolder && (!activeFolderId || file.folderId === activeFolderId));
     if (activeCategory === "apps") {
       result = files.filter((file) => !file.isFolder && /\.(exe|msi|app|dmg|pkg|deb|rpm|apk|aab|ipa|bat|cmd|appx|msix)$/i.test(file.name) && (!activeFolderId || file.folderId === activeFolderId));
     }
@@ -2519,6 +2521,20 @@ export default function CloudvaltApp() {
                     const isSelected = selectedIds.has(file.id);
 
                     if (file.isFolder) {
+                      if (activeCategory === "trash") {
+                        return (
+                          <div key={file.id} className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+                            <Files className="h-10 w-10 text-amber-300" />
+                            <span className="mt-4 block truncate text-sm font-semibold text-white" title={file.name}>{file.name}</span>
+                            <span className="mt-1 block text-xs text-zinc-400">Folder in Trash · contents hidden</span>
+                            <div className="mt-4 border-t border-zinc-900 pt-3">
+                              <button type="button" onClick={(event) => void restoreFile(file, event)} className="flex items-center gap-1 rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10">
+                                <RotateCcw className="h-3.5 w-3.5" /> Restore folder
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={file.id} className="relative rounded-2xl border border-zinc-800 bg-zinc-950 p-5 text-left hover:border-emerald-500/60 hover:bg-zinc-900">
                           <button type="button" onClick={() => openFolder(file)} className="w-full text-left">
@@ -2537,7 +2553,7 @@ export default function CloudvaltApp() {
                       <motion.div
                         key={file.id}
                         whileHover={{ y: -4 }}
-                        onClick={() => file.isFolder ? openFolder(file) : setPreviewFile(file)}
+                        onClick={() => activeCategory === "trash" ? undefined : file.isFolder ? openFolder(file) : setPreviewFile(file)}
                         className={`group relative rounded-2xl border p-3 flex flex-col justify-between transition-all cursor-pointer bg-zinc-950 hover:bg-zinc-900/80 ${
                           isSelected ? "border-white bg-zinc-900" : "border-zinc-900 hover:border-zinc-700"
                         }`}
