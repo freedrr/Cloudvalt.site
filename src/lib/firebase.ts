@@ -453,7 +453,7 @@ export async function getUserFilesFromFirestore(
           mimeType: "application/x-directory",
           folderId: data.folderId || null,
           isFolder: true,
-          isDeleted: Boolean(data.isDeleted) || String(data.parentFolderId ?? data.folderId ?? "").startsWith("__trash__:"),
+          isDeleted: Boolean(data.isDeleted),
           deletedAt: data.deletedAt || null,
           uploadedAt: data.uploadedAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString(),
@@ -485,7 +485,7 @@ export async function getUserFilesFromFirestore(
         userEmail: data.userEmail,
         url: data.url || `/api/files/${docSnap.id}`,
         isFavorite: Boolean(data.isFavorite),
-        isDeleted: Boolean(data.isDeleted) || String(data.parentFolderId ?? data.folderId ?? "").startsWith("__trash__:"),
+        isDeleted: Boolean(data.isDeleted),
         deletedAt: data.deletedAt || (data.isDeleted ? data.updatedAt : null),
       });
     });
@@ -702,10 +702,9 @@ export async function deleteUserFolderInFirestore(
       }),
       ...childFolders.map(async (entry) => {
         if (entry.legacy) {
-          await deleteDoc(doc(db, "users", userId, "files", entry.id));
+          await updateDoc(doc(db, "users", userId, "files", entry.id), { isDeleted: true, updatedAt: now });
         } else {
-          const originalParent = entry.id === folderId ? (parentFolderId || "root") : (entry.data.parentFolderId ?? entry.data.folderId ?? "root");
-          await updateDoc(doc(db, "users", userId, "folders", entry.id), { parentFolderId: `__trash__:${originalParent}`, updatedAt: now });
+          await updateDoc(doc(db, "users", userId, "folders", entry.id), { isDeleted: true, updatedAt: now });
         }
       }),
     ]);
@@ -737,10 +736,12 @@ export async function restoreUserFolderInFirestore(userId: string, folderId: str
     }
     const now = new Date().toISOString();
     await Promise.all([
-      ...foldersSnapshot.docs.filter((entry) => descendants.has(entry.id) && String(entry.data().parentFolderId || "").startsWith("__trash__:")).map((entry) => {
-        const savedParent = String(entry.data().parentFolderId).slice("__trash__:".length);
-        return updateDoc(doc(db, "users", userId, "folders", entry.id), { parentFolderId: savedParent === "root" ? null : savedParent, updatedAt: now });
+      ...foldersSnapshot.docs.filter((entry) => descendants.has(entry.id) && entry.data().isDeleted).map((entry) => {
+        return updateDoc(doc(db, "users", userId, "folders", entry.id), { isDeleted: false, updatedAt: now });
       }),
+      ...filesSnapshot.docs.filter((entry) => descendants.has(entry.id) && entry.data().isFolder && entry.data().isDeleted).map((entry) =>
+        updateDoc(doc(db, "users", userId, "files", entry.id), { isDeleted: false, updatedAt: now })
+      ),
       ...filesSnapshot.docs.filter((entry) => descendants.has(entry.data().folderId) && entry.data().isDeleted).map(async (entry) => {
         const updateData = { isDeleted: false, updatedAt: now };
         await updateDoc(doc(db, "users", userId, "files", entry.id), updateData);

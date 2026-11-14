@@ -1132,7 +1132,7 @@ export default function CloudvaltApp() {
       if (currentUser?.id && currentUser.isFirebaseUser) {
         const outcome = await deleteUserFolderInFirestore(currentUser.id, folder.id, folder.folderId || null);
         showNotification(outcome.trashedFiles
-          ? `${outcome.trashedFiles} file${outcome.trashedFiles === 1 ? "" : "s"} moved to Trash; folder deleted.`
+          ? `Folder and ${outcome.trashedFiles} file${outcome.trashedFiles === 1 ? "" : "s"} moved to Trash together.`
           : "Empty folder deleted.");
       } else {
         const query = currentUser?.id ? `?userId=${encodeURIComponent(currentUser.id)}` : "";
