@@ -2366,21 +2366,21 @@ export default function CloudvaltApp() {
                               <Play className="h-3 w-3" /> Play Video
                             </span>
                           )}
-                          <button
+                          {!file.isFolder && <button
                             onClick={(e) => toggleFavorite(file, e)}
                             className={`p-1.5 rounded-lg hover:bg-zinc-800 transition-colors ${
                               file.isFavorite ? "text-amber-400" : "text-zinc-400 hover:text-white"
                             }`}
                           >
                             <Star className="h-4 w-4" fill={file.isFavorite ? "currentColor" : "none"} />
-                          </button>
-                          <button
+                          </button>}
+                          {!file.isFolder && <button
                             onClick={(e) => downloadFile(file, e)}
                             className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
                           >
                             <Download className="h-4 w-4" />
-                          </button>
-                          <button
+                          </button>}
+                          {!file.isFolder && <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setRenameTarget(file);
@@ -2390,8 +2390,8 @@ export default function CloudvaltApp() {
                             className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
                           >
                             <Pencil className="h-4 w-4" />
-                          </button>
-                          <button
+                          </button>}
+                          {!file.isFolder && <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setDeleteTarget(file);
@@ -2400,7 +2400,7 @@ export default function CloudvaltApp() {
                             className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition-colors"
                           >
                             <Trash2 className="h-4 w-4" />
-                          </button>
+                          </button>}
                         </div>
                       </div>
                     );
@@ -2705,7 +2705,7 @@ export default function CloudvaltApp() {
                             title="Delete folder"
                             className="p-1.5 rounded text-zinc-400 hover:text-red-400"
                           ><Trash2 className="h-4 w-4" /></button>}
-                          <button
+                          {!file.isFolder && <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setRenameTarget(file);
@@ -2714,8 +2714,8 @@ export default function CloudvaltApp() {
                             className="p-1.5 rounded text-zinc-400 hover:text-white"
                           >
                             <Pencil className="h-4 w-4" />
-                          </button>
-                          <button
+                          </button>}
+                          {!file.isFolder && <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setDeleteTarget(file);
@@ -2724,7 +2724,7 @@ export default function CloudvaltApp() {
                             className="p-1.5 rounded text-zinc-400 hover:text-red-400"
                           >
                             <Trash2 className="h-4 w-4" />
-                          </button>
+                          </button>}
                           </>}
                         </div>
                       </div>
