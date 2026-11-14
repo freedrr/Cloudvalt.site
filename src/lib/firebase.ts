@@ -565,9 +565,12 @@ export async function getUserFilesFromFirestore(
     let filtered: CloudFile[];
     if (category === "trash") {
       const trashedFolderIds = new Set(folders.filter((folder) => folder.isDeleted).map((folder) => folder.id));
-      const topLevelTrashedFolders = folders.filter((folder) =>
-        folder.isDeleted && (!folder.folderId || !trashedFolderIds.has(folder.folderId))
-      );
+      const topLevelTrashedFolders = folders.filter((folder) => {
+        if (!folder.isDeleted) return false;
+        const folderRecord = foldersSnap.docs.find((entry) => entry.id === folder.id)?.data();
+        const originalParent = folderRecord?.parentFolderId ?? folderRecord?.folderId ?? folder.folderId;
+        return !originalParent || !trashedFolderIds.has(originalParent);
+      });
       const individuallyTrashedFiles = fileRecords.filter((file) =>
         file.isDeleted && (!file.folderId || !trashedFolderIds.has(file.folderId))
       );
@@ -667,7 +670,7 @@ export async function deleteUserFileInFirestore(
     await syncUserStorageStats(userId);
 
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleFirestoreError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -721,7 +724,7 @@ export async function deleteUserFolderInFirestore(
     await syncUserStorageStats(userId);
     return { trashedFiles: childFiles.length, deletedFolders: childFolders.length };
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleFirestoreError(err, OperationType.UPDATE, path);
   }
 }
 
