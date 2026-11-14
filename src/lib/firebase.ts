@@ -704,7 +704,7 @@ export async function deleteUserFolderInFirestore(
         if (entry.legacy) {
           await updateDoc(doc(db, "users", userId, "files", entry.id), { isDeleted: true, updatedAt: now });
         } else {
-          await updateDoc(doc(db, "users", userId, "folders", entry.id), { isDeleted: true, updatedAt: now });
+          await updateDoc(doc(db, "users", userId, "folders", entry.id), { isDeleted: true, deletedAt: now, updatedAt: now });
         }
       }),
     ]);
