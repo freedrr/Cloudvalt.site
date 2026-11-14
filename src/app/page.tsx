@@ -68,6 +68,7 @@ import {
   deleteUserFolderInFirestore,
   fetchUserProfile,
   restoreUserFileInFirestore,
+  restoreUserFolderInFirestore,
   renameUserFileInFirestore,
   renameUserFolderInFirestore,
   toggleUserFileFavoriteInFirestore,
@@ -1105,8 +1106,8 @@ export default function CloudvaltApp() {
     event?.stopPropagation();
     try {
       if (currentUser?.id && currentUser.isFirebaseUser) {
-        if (file.isFolder) throw new Error("This folder was removed when it was sent to Trash. Restore the files individually.");
-        await restoreUserFileInFirestore(currentUser.id, file.id);
+        if (file.isFolder) await restoreUserFolderInFirestore(currentUser.id, file.id);
+        else await restoreUserFileInFirestore(currentUser.id, file.id);
       } else {
         const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
           method: "PATCH",
@@ -1117,7 +1118,7 @@ export default function CloudvaltApp() {
         if (!response.ok || !result.success) throw new Error(result.error || "Could not restore file.");
       }
       setFiles((previous) => previous.filter((entry) => entry.id !== file.id));
-      showNotification(`Restored ${file.name}.`);
+      showNotification(file.isFolder ? `Restored folder ${file.name} and its files.` : `Restored ${file.name}.`);
       await loadFiles();
     } catch (error: any) {
       showNotification(error.message || "Could not restore file.");

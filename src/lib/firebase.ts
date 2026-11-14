@@ -501,7 +501,7 @@ export async function getUserFilesFromFirestore(
         mimeType: "application/x-directory",
         folderId: data.parentFolderId ?? data.folderId ?? null,
         isFolder: true,
-        isDeleted: Boolean(data.isDeleted),
+        isDeleted: Boolean(data.isDeleted) || String(data.parentFolderId ?? data.folderId ?? "").startsWith("__trash__:"),
         deletedAt: data.deletedAt || null,
         uploadedAt: data.uploadedAt || new Date().toISOString(),
         updatedAt: data.updatedAt || new Date().toISOString(),
@@ -701,13 +701,55 @@ export async function deleteUserFolderInFirestore(
         await updateDoc(doc(db, "files", entry.id), updateData).catch(() => {});
       }),
       ...childFolders.map(async (entry) => {
-        await deleteDoc(doc(db, "users", userId, entry.legacy ? "files" : "folders", entry.id));
+        if (entry.legacy) {
+          await deleteDoc(doc(db, "users", userId, "files", entry.id));
+        } else {
+          const originalParent = entry.id === folderId ? (parentFolderId || "root") : (entry.data.parentFolderId ?? entry.data.folderId ?? "root");
+          await updateDoc(doc(db, "users", userId, "folders", entry.id), { parentFolderId: `__trash__:${originalParent}`, updatedAt: now });
+        }
       }),
     ]);
     await syncUserStorageStats(userId);
     return { trashedFiles: childFiles.length, deletedFolders: childFolders.length };
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+export async function restoreUserFolderInFirestore(userId: string, folderId: string): Promise<void> {
+  const path = `users/${userId}/folders/${folderId}`;
+  try {
+    const [filesSnapshot, foldersSnapshot] = await Promise.all([
+      getDocs(collection(db, "users", userId, "files")),
+      getDocs(collection(db, "users", userId, "folders")),
+    ]);
+    const descendants = new Set<string>([folderId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const entry of foldersSnapshot.docs) {
+        const parent = entry.data().parentFolderId ?? entry.data().folderId ?? null;
+        if (parent && descendants.has(parent) && !descendants.has(entry.id)) {
+          descendants.add(entry.id);
+          expanded = true;
+        }
+      }
+    }
+    const now = new Date().toISOString();
+    await Promise.all([
+      ...foldersSnapshot.docs.filter((entry) => descendants.has(entry.id) && String(entry.data().parentFolderId || "").startsWith("__trash__:")).map((entry) => {
+        const savedParent = String(entry.data().parentFolderId).slice("__trash__:".length);
+        return updateDoc(doc(db, "users", userId, "folders", entry.id), { parentFolderId: savedParent === "root" ? null : savedParent, updatedAt: now });
+      }),
+      ...filesSnapshot.docs.filter((entry) => descendants.has(entry.data().folderId) && entry.data().isDeleted).map(async (entry) => {
+        const updateData = { isDeleted: false, updatedAt: now };
+        await updateDoc(doc(db, "users", userId, "files", entry.id), updateData);
+        await updateDoc(doc(db, "files", entry.id), updateData).catch(() => {});
+      }),
+    ]);
+    await syncUserStorageStats(userId);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
   }
 }
 
