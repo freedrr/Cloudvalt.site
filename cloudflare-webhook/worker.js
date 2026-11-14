@@ -155,7 +155,9 @@ async function handleCreateCheckout(request, env) {
       return checkoutJson(request, { error: "Could not load this storage plan from checkout." }, 502);
     }
     const accountId = existing.account_id || existing.account?.id;
-    const variantId = existing.variant?.id || existing.variant_id || existing.plan_id;
+    // Whop's retrieve response exposes legacy checkout plans as `plan`,
+    // while newer responses use `variant`.
+    const variantId = existing.variant?.id || existing.plan?.id || existing.variant_id || existing.plan_id;
     if (!accountId || !variantId) {
       console.error("Whop checkout source did not include account and variant identifiers.");
       return checkoutJson(request, { error: "The selected subscription plan is not available." }, 502);
@@ -267,12 +269,6 @@ function readString(value) {
   return "";
 }
 
-function getEmail(data) {
-  const candidates = [data?.user?.email, data?.member?.email, data?.email, data?.user_email];
-  const found = candidates.find((value) => typeof value === "string" && value.includes("@"));
-  return found ? found.trim().toLowerCase() : "";
-}
-
 function getPlanId(data) {
   return readString(data?.plan_id)
     || readString(data?.plan)
@@ -311,33 +307,6 @@ async function findUserByUid(projectId, token, uid, env) {
   if (response.status === 404) throw new Error("The Cloudvalt account for this payment no longer exists.");
   if (!response.ok) throw new Error("Could not find the Cloudvalt account for this payment.");
   return response.json();
-}
-
-async function findUserByEmail(projectId, token, email, env) {
-  const queryUrl = `${firestoreUrl(projectId, "", env)}:runQuery`;
-  const query = (value) => fetch(queryUrl, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ structuredQuery: {
-      from: [{ collectionId: "users" }],
-      where: { fieldFilter: { field: { fieldPath: "email" }, op: "EQUAL", value: firestoreString(value) } },
-      limit: 2,
-    } }),
-  });
-
-  let response = await query(email);
-  if (!response.ok) throw new Error("Could not find the matching Cloudvalt account.");
-  let matches = (await response.json()).map((entry) => entry.document).filter(Boolean);
-  if (!matches.length && email !== email.toLowerCase()) {
-    response = await query(email.toLowerCase());
-    if (!response.ok) throw new Error("Could not find the matching Cloudvalt account.");
-    matches = (await response.json()).map((entry) => entry.document).filter(Boolean);
-  }
-  if (matches.length !== 1) {
-    if (matches.length > 1) throw new Error("More than one Cloudvalt account matches this payment email.");
-    throw new Error("No Cloudvalt account matches the email used at checkout.");
-  }
-  return matches[0];
 }
 
 async function isDuplicate(projectId, token, eventId, env) {
@@ -419,11 +388,11 @@ async function handleWebhook(request, env) {
 
     const metadata = getEventMetadata(event.data);
     const metadataUid = typeof metadata.firebase_uid === "string" ? metadata.firebase_uid : "";
-    const email = getEmail(event.data);
-    if (!metadataUid && !email) throw new Error("The payment does not include a Cloudvalt account ID.");
-    const user = metadataUid
-      ? await findUserByUid(projectId, token, metadataUid, env)
-      : await findUserByEmail(projectId, token, email, env);
+    if (!metadataUid || !/^[A-Za-z0-9_-]{1,128}$/.test(metadataUid)) {
+      console.warn("Whop payment event has no trusted Firebase UID; no account plan was changed.", eventId);
+      return respond({ ignored: true, reason: "missing_trusted_firebase_uid" });
+    }
+    const user = await findUserByUid(projectId, token, metadataUid, env);
     const uid = user.name.split("/").pop();
     const updateMask = ["plan", "planId", "maxStorageBytes", "updatedAt"];
     let fields;
