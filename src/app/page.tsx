@@ -66,6 +66,8 @@ import {
   getUserFilesFromFirestore,
   deleteUserFileInFirestore,
   deleteUserFolderInFirestore,
+  getUserFolderFilesForPermanentDelete,
+  permanentlyDeleteUserFolderInFirestore,
   fetchUserProfile,
   restoreUserFileInFirestore,
   restoreUserFolderInFirestore,
@@ -1059,6 +1061,36 @@ export default function CloudvaltApp() {
     const permanently = activeCategory === "trash";
 
     try {
+      if (deleteTarget.isFolder) {
+        if (!permanently || !currentUser?.id || !currentUser.isFirebaseUser) {
+          throw new Error("Permanent folder deletion is only available for signed-in account folders in Trash.");
+        }
+        const folderFiles = await getUserFolderFilesForPermanentDelete(currentUser.id, deleteTarget.id);
+        for (const file of folderFiles) {
+          if (file.storedInB2 && !file.b2FileName) {
+            throw new Error(`Cannot permanently delete “${file.name}”: its cloud storage key is missing.`);
+          }
+          if (!file.b2FileName) continue;
+          const params = new URLSearchParams({ permanent: "true", userId: currentUser.id, b2FileName: file.b2FileName });
+          const response = await fetch(`/api/files/${encodeURIComponent(file.id)}?${params}`, {
+            method: "DELETE",
+            headers: await getAuthHeaders(),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || !result.success) {
+            throw new Error(result.error || `Could not permanently delete “${file.name}” from cloud storage.`);
+          }
+        }
+        await permanentlyDeleteUserFolderInFirestore(currentUser.id, deleteTarget.id);
+        showNotification(folderFiles.length
+          ? `Folder and ${folderFiles.length} file${folderFiles.length === 1 ? "" : "s"} permanently deleted from your vault and cloud storage.`
+          : "Empty folder permanently deleted from your account. Empty folders have no cloud storage object.");
+        setFiles((previous) => previous.filter((file) => file.id !== deleteTarget.id));
+        setDeleteTarget(null);
+        await loadFiles();
+        return;
+      }
+
       const deleteParams = new URLSearchParams({ permanent: String(permanently) });
       if (currentUser?.id) deleteParams.set("userId", currentUser.id);
       if (deleteTarget.b2FileName) deleteParams.set("b2FileName", deleteTarget.b2FileName);
@@ -3145,11 +3177,13 @@ export default function CloudvaltApp() {
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
               <h3 className="text-lg font-bold text-white mb-2">
-                {activeCategory === "trash" ? "Permanently delete file?" : "Move file to Trash?"}
+                {activeCategory === "trash" ? `Permanently delete ${deleteTarget.isFolder ? "folder" : "file"}?` : "Move file to Trash?"}
               </h3>
               <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
                 {activeCategory === "trash"
-                  ? <>Permanently delete <strong className="text-white">“{deleteTarget.name}”</strong> from your account and cloud storage? This cannot be undone.</>
+                  ? deleteTarget.isFolder
+                    ? <>Permanently delete folder <strong className="text-white">“{deleteTarget.name}”</strong> and everything inside it? Files will be removed from cloud storage. This cannot be undone.</>
+                    : <>Permanently delete <strong className="text-white">“{deleteTarget.name}”</strong> from your account and cloud storage? This cannot be undone.</>
                   : <>Move <strong className="text-white">“{deleteTarget.name}”</strong> to Trash? You can restore it for 30 days before permanently deleting it.</>}
               </p>
               <div className="flex items-center justify-end gap-2">
@@ -3166,7 +3200,7 @@ export default function CloudvaltApp() {
                   className={`px-4 py-2 text-xs rounded-lg text-white font-semibold flex items-center gap-1.5 shadow-sm ${activeCategory === "trash" ? "bg-red-600 hover:bg-red-500" : "bg-zinc-700 hover:bg-zinc-600"}`}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  <span>{activeCategory === "trash" ? "Delete Permanently" : "Move to Trash"}</span>
+                  <span>{activeCategory === "trash" ? `Delete ${deleteTarget.isFolder ? "Folder" : "Permanently"}${deleteTarget.isFolder ? " Permanently" : ""}` : "Move to Trash"}</span>
                 </button>
               </div>
             </div>

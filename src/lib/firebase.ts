@@ -767,6 +767,78 @@ export async function restoreUserFolderInFirestore(userId: string, folderId: str
   }
 }
 
+export async function getUserFolderFilesForPermanentDelete(userId: string, folderId: string): Promise<CloudFile[]> {
+  const [filesSnapshot, foldersSnapshot] = await Promise.all([
+    getDocs(collection(db, "users", userId, "files")),
+    getDocs(collection(db, "users", userId, "folders")),
+  ]);
+  const descendants = new Set<string>([folderId]);
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const entry of foldersSnapshot.docs) {
+      const parent = entry.data().parentFolderId ?? entry.data().folderId ?? null;
+      if (parent && descendants.has(parent) && !descendants.has(entry.id)) {
+        descendants.add(entry.id);
+        expanded = true;
+      }
+    }
+  }
+  return filesSnapshot.docs
+    .filter((entry) => !entry.data().isFolder && descendants.has(entry.data().folderId))
+    .map((entry) => {
+      const data = entry.data();
+      return {
+        ...data,
+        id: entry.id,
+        name: data.name || "Untitled",
+        size: Number(data.size) || 0,
+        type: data.type || "other",
+        mimeType: data.mimeType || "application/octet-stream",
+        b2FileName: data.b2FileName || undefined,
+        storedInB2: Boolean(data.storedInB2),
+        folderId: data.folderId || null,
+        isFolder: false,
+      } as CloudFile;
+    });
+}
+
+export async function permanentlyDeleteUserFolderInFirestore(userId: string, folderId: string): Promise<void> {
+  const path = `users/${userId}/folders/${folderId}`;
+  try {
+    const [filesSnapshot, foldersSnapshot] = await Promise.all([
+      getDocs(collection(db, "users", userId, "files")),
+      getDocs(collection(db, "users", userId, "folders")),
+    ]);
+    const descendants = new Set<string>([folderId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const entry of foldersSnapshot.docs) {
+        const parent = entry.data().parentFolderId ?? entry.data().folderId ?? null;
+        if (parent && descendants.has(parent) && !descendants.has(entry.id)) {
+          descendants.add(entry.id);
+          expanded = true;
+        }
+      }
+    }
+    const childFiles = filesSnapshot.docs.filter((entry) => !entry.data().isFolder && descendants.has(entry.data().folderId));
+    const childLegacyFolders = filesSnapshot.docs.filter((entry) => entry.data().isFolder && descendants.has(entry.id));
+    const childFolders = foldersSnapshot.docs.filter((entry) => descendants.has(entry.id));
+    await Promise.all([
+      ...childFiles.flatMap((entry) => [
+        deleteDoc(doc(db, "users", userId, "files", entry.id)),
+        deleteDoc(doc(db, "files", entry.id)),
+      ]),
+      ...childLegacyFolders.map((entry) => deleteDoc(doc(db, "users", userId, "files", entry.id))),
+      ...childFolders.map((entry) => deleteDoc(doc(db, "users", userId, "folders", entry.id))),
+    ]);
+    await syncUserStorageStats(userId);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
 export async function renameUserFolderInFirestore(userId: string, folderId: string, name: string): Promise<void> {
   const path = `users/${userId}/folders/${folderId}`;
   try {
