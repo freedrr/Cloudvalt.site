@@ -738,6 +738,17 @@ export async function deleteUserFolderInFirestore(
   }
 }
 
+export async function renameUserFolderInFirestore(userId: string, folderId: string, name: string): Promise<void> {
+  const path = `users/${userId}/folders/${folderId}`;
+  try {
+    const cleanName = name.trim();
+    if (!cleanName || cleanName.length > 120) throw new Error("Folder name must be 1 to 120 characters.");
+    await updateDoc(doc(db, "users", userId, "folders", folderId), { name: cleanName, updatedAt: new Date().toISOString() });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
 // Restore file from trash in Firestore
 export async function restoreUserFileInFirestore(
   userId: string,

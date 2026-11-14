@@ -70,6 +70,7 @@ import {
   restoreUserFileInFirestore,
   restoreUserFolderInFirestore,
   renameUserFileInFirestore,
+  renameUserFolderInFirestore,
   toggleUserFileFavoriteInFirestore,
   detectFileType,
   saveUserFeedback,
@@ -1166,24 +1167,25 @@ export default function CloudvaltApp() {
     const cleanName = newNameInput.trim();
 
     try {
-      if (currentUser?.id && currentUser.isFirebaseUser) {
+      if (currentUser?.id && currentUser.isFirebaseUser && !renameTarget.isFolder) {
         await renameUserFileInFirestore(currentUser.id, renameTarget.id, cleanName).catch((err) =>
           console.warn("Firestore rename sync:", err)
         );
       }
-      const res = await fetch(`/api/files/${renameTarget.id}`, {
-        method: "PATCH",
-        headers: await getAuthHeaders(),
-        body: JSON.stringify({ newName: cleanName }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setFiles((prev) =>
-          prev.map((f) => (f.id === renameTarget.id ? { ...f, name: data.file.name } : f))
-        );
-        showNotification("File renamed successfully.");
-        setRenameTarget(null);
+      if (renameTarget.isFolder && currentUser?.id && currentUser.isFirebaseUser) {
+        await renameUserFolderInFirestore(currentUser.id, renameTarget.id, cleanName);
+      } else if (!renameTarget.isFolder) {
+        const res = await fetch(`/api/files/${encodeURIComponent(renameTarget.id)}`, {
+          method: "PATCH",
+          headers: await getAuthHeaders(),
+          body: JSON.stringify({ newName: cleanName }),
+        });
+        if (!res.ok) throw new Error("Could not rename file.");
       }
+      setFiles((prev) => prev.map((file) => file.id === renameTarget.id ? { ...file, name: cleanName } : file));
+      showNotification(renameTarget.isFolder ? "Folder renamed successfully." : "File renamed successfully.");
+      setRenameTarget(null);
+      await loadFiles();
     } catch (err) {
       console.error("Rename error:", err);
     }
@@ -1195,7 +1197,11 @@ export default function CloudvaltApp() {
     const controller = new AbortController();
     try {
       setDownloadProgress({ name: file.name, loaded: 0, total: file.size || 0, controller });
-      const downloadUrl = `/api/files/${file.id}?download=true${currentUser?.id ? `&userId=${currentUser.id}` : ""}`;
+      const downloadParams = new URLSearchParams({ download: "true" });
+      if (currentUser?.id) downloadParams.set("userId", currentUser.id);
+      if (file.b2FileName) downloadParams.set("b2FileName", file.b2FileName);
+      if (file.storedInB2) downloadParams.set("storedInB2", "true");
+      const downloadUrl = `/api/files/${encodeURIComponent(file.id)}?${downloadParams.toString()}`;
       const res = await fetch(downloadUrl, { headers: await getAuthHeaders(), signal: controller.signal });
       if (!res.ok) throw new Error("Download request failed");
 
@@ -2349,6 +2355,12 @@ export default function CloudvaltApp() {
                         </div>
 
                         <div className="flex items-center gap-2">
+                          {file.isFolder ? (
+                            <>
+                              <button onClick={(e) => { e.stopPropagation(); setRenameTarget(file); setNewNameInput(file.name); }} title="Rename folder" className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800"><Pencil className="h-4 w-4" /></button>
+                              <button onClick={(e) => { e.stopPropagation(); setDeleteFolderTarget(file); }} title="Delete folder" className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800"><Trash2 className="h-4 w-4" /></button>
+                            </>
+                          ) : null}
                           {file.type === "video" && (
                             <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">
                               <Play className="h-3 w-3" /> Play Video
@@ -2683,6 +2695,16 @@ export default function CloudvaltApp() {
                           >
                             <Download className="h-4 w-4" />
                           </button>}
+                          {file.isFolder && <button
+                            onClick={(e) => { e.stopPropagation(); setRenameTarget(file); setNewNameInput(file.name); }}
+                            title="Rename folder"
+                            className="p-1.5 rounded text-zinc-400 hover:text-white"
+                          ><Pencil className="h-4 w-4" /></button>}
+                          {file.isFolder && <button
+                            onClick={(e) => { e.stopPropagation(); setDeleteFolderTarget(file); }}
+                            title="Delete folder"
+                            className="p-1.5 rounded text-zinc-400 hover:text-red-400"
+                          ><Trash2 className="h-4 w-4" /></button>}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
