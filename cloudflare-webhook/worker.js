@@ -1,6 +1,13 @@
 const DEFAULT_DATABASE_ID = "ai-studio-remixremixcloudv-42a2b61a-2d55-4ff5-9eec-86f128500033";
+const FIREBASE_PROJECT_ID = "strange-bird-467010-q9";
+const CHECKOUTS = {
+  "50gb": { checkoutId: "ch_nQGMC9zyxWndgAz", name: "50 GB Starter", bytes: 50 * 1024 ** 3 },
+  "250gb": { checkoutId: "ch_5Ws2YBO75QKKJfS", name: "250 GB Pro Studio", bytes: 250 * 1024 ** 3 },
+  "1tb": { checkoutId: "ch_Bk8BD0spJ6gdDgy", name: "1 TB Ultimate", bytes: 1024 ** 4 },
+};
 const encoder = new TextEncoder();
 let cachedGoogleToken = { value: "", expiresAt: 0 };
+let firebaseSigningKeys = { expiresAt: 0, keys: {} };
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -50,6 +57,137 @@ async function verifyWhopSignature(request, rawBody, secret) {
     const [version, value] = entry.split(",", 2);
     return version === "v1" && value && constantTimeEqual(value, expected);
   });
+}
+
+function decodeBase64UrlJson(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  return JSON.parse(atob(padded));
+}
+
+async function verifyFirebaseIdToken(request) {
+  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!token) return null;
+  const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+  if (!encodedHeader || !encodedPayload || !encodedSignature) return null;
+  try {
+    const header = decodeBase64UrlJson(encodedHeader);
+    const payload = decodeBase64UrlJson(encodedPayload);
+    const now = Math.floor(Date.now() / 1000);
+    if (header.alg !== "RS256" || !header.kid || payload.aud !== FIREBASE_PROJECT_ID
+      || payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`
+      || typeof payload.sub !== "string" || !payload.sub || payload.sub.length > 128
+      || payload.exp <= now || payload.iat > now || !payload.auth_time || payload.auth_time > now) return null;
+
+    if (firebaseSigningKeys.expiresAt <= Date.now()) {
+      const response = await fetch("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com");
+      if (!response.ok) return null;
+      const keySet = await response.json();
+      firebaseSigningKeys = {
+        keys: Object.fromEntries(keySet.keys.map((key) => [key.kid, key])),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      };
+    }
+    const jwk = firebaseSigningKeys.keys[header.kid];
+    if (!jwk) return null;
+    const publicKey = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const signature = Uint8Array.from(atob(encodedSignature.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - encodedSignature.length % 4) % 4)), (char) => char.charCodeAt(0));
+    const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, signature, encoder.encode(`${encodedHeader}.${encodedPayload}`));
+    return valid ? { uid: payload.sub, email: typeof payload.email === "string" ? payload.email : "" } : null;
+  } catch {
+    return null;
+  }
+}
+
+function checkoutCorsHeaders(request) {
+  const origin = request.headers.get("origin") || "";
+  const allowed = new Set([
+    "https://cloudvalt-site.pages.dev",
+    "https://cloudvalt.site",
+    "https://www.cloudvalt.site",
+    "http://localhost:3000",
+  ]);
+  return {
+    "access-control-allow-origin": allowed.has(origin) ? origin : "https://cloudvalt-site.pages.dev",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "Authorization, Content-Type",
+    "access-control-max-age": "86400",
+    "vary": "Origin",
+  };
+}
+
+function checkoutJson(request, data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...checkoutCorsHeaders(request), "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+async function handleCreateCheckout(request, env) {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: checkoutCorsHeaders(request) });
+  if (request.method !== "POST") return checkoutJson(request, { error: "Method not allowed." }, 405);
+  if (!env.WHOP_API_KEY) return checkoutJson(request, { error: "Checkout is not configured." }, 503);
+
+  const identity = await verifyFirebaseIdToken(request);
+  if (!identity) return checkoutJson(request, { error: "Sign in to continue to checkout." }, 401);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return checkoutJson(request, { error: "Invalid checkout request." }, 400);
+  }
+  const planId = body?.planId;
+  const plan = CHECKOUTS[planId];
+  if (!plan) return checkoutJson(request, { error: "Choose a valid storage plan." }, 400);
+
+  try {
+    const apiHeaders = {
+      authorization: `Bearer ${env.WHOP_API_KEY}`,
+      "content-type": "application/json",
+      "api-version-date": "2026-08-21-1",
+    };
+    const existingResponse = await fetch(`https://api.whop.com/api/v1/checkout_configurations/${plan.checkoutId}`, {
+      headers: apiHeaders,
+    });
+    const existing = await existingResponse.json().catch(() => ({}));
+    if (!existingResponse.ok) {
+      console.error("Whop checkout source lookup failed:", existingResponse.status);
+      return checkoutJson(request, { error: "Could not load this storage plan from checkout." }, 502);
+    }
+    const accountId = existing.account_id || existing.account?.id;
+    const variantId = existing.variant?.id || existing.variant_id || existing.plan_id;
+    if (!accountId || !variantId) {
+      console.error("Whop checkout source did not include account and variant identifiers.");
+      return checkoutJson(request, { error: "The selected subscription plan is not available." }, 502);
+    }
+
+    const createResponse = await fetch("https://api.whop.com/api/v1/checkout_configurations", {
+      method: "POST",
+      headers: {
+        ...apiHeaders,
+        "idempotency-key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({
+        account_id: accountId,
+        variant_id: variantId,
+        mode: "payment",
+        redirect_url: "https://cloudvalt-site.pages.dev/",
+        metadata: {
+          firebase_uid: identity.uid,
+          cloudvalt_plan_id: planId,
+        },
+      }),
+    });
+    const checkout = await createResponse.json().catch(() => ({}));
+    if (!createResponse.ok || typeof checkout.purchase_url !== "string") {
+      console.error("Whop checkout creation failed:", createResponse.status, checkout?.error?.code || "unknown");
+      return checkoutJson(request, { error: "Could not create checkout. Please try again." }, 502);
+    }
+    return checkoutJson(request, { purchase_url: checkout.purchase_url });
+  } catch (error) {
+    console.error("Whop checkout request failed:", error instanceof Error ? error.message : "unknown error");
+    return checkoutJson(request, { error: "Checkout is temporarily unavailable." }, 502);
+  }
 }
 
 function pemToBytes(pem) {
@@ -147,6 +285,15 @@ function getMembershipId(data) {
   return readString(data?.membership_id) || readString(data?.membership) || "";
 }
 
+function getEventMetadata(data) {
+  return data?.metadata || data?.membership?.metadata || {};
+}
+
+function planFromCloudvaltKey(key) {
+  const plan = CHECKOUTS[key];
+  return plan ? { key, name: plan.name, bytes: plan.bytes } : null;
+}
+
 function planForWhopId(env, planId) {
   const plans = [
     { id: env.WHOP_PLAN_50GB_ID, key: "50gb", name: "50 GB Starter", bytes: 50 * 1024 ** 3 },
@@ -154,6 +301,16 @@ function planForWhopId(env, planId) {
     { id: env.WHOP_PLAN_1TB_ID, key: "1tb", name: "1 TB Ultimate", bytes: 1024 ** 4 },
   ];
   return plans.find((plan) => plan.id && plan.id === planId) || null;
+}
+
+async function findUserByUid(projectId, token, uid, env) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) throw new Error("Payment metadata contains an invalid account ID.");
+  const response = await fetch(firestoreUrl(projectId, `users/${encodeURIComponent(uid)}`, env), {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (response.status === 404) throw new Error("The Cloudvalt account for this payment no longer exists.");
+  if (!response.ok) throw new Error("Could not find the Cloudvalt account for this payment.");
+  return response.json();
 }
 
 async function findUserByEmail(projectId, token, email, env) {
@@ -244,9 +401,13 @@ async function handleWebhook(request, env) {
     const duplicateCheck = await isDuplicate(projectId, token, eventId, env);
     if (duplicateCheck.duplicate) return json({ received: true, duplicate: true });
 
+    const metadata = getEventMetadata(event.data);
+    const metadataUid = typeof metadata.firebase_uid === "string" ? metadata.firebase_uid : "";
     const email = getEmail(event.data);
-    if (!email) throw new Error("Whop did not include the buyer email. Enable buyer email access for these webhook events.");
-    const user = await findUserByEmail(projectId, token, email, env);
+    if (!metadataUid && !email) throw new Error("The payment does not include a Cloudvalt account ID.");
+    const user = metadataUid
+      ? await findUserByUid(projectId, token, metadataUid, env)
+      : await findUserByEmail(projectId, token, email, env);
     const uid = user.name.split("/").pop();
     const updateMask = ["plan", "planId", "maxStorageBytes", "updatedAt"];
     let fields;
@@ -266,8 +427,7 @@ async function handleWebhook(request, env) {
       updateMask.push("whopMembershipId");
       fields.whopMembershipId = { nullValue: null };
     } else {
-      const planId = getPlanId(event.data);
-      const plan = planForWhopId(env, planId);
+      const plan = planFromCloudvaltKey(metadata.cloudvalt_plan_id) || planForWhopId(env, getPlanId(event.data));
       if (!plan) throw new Error("The paid Whop plan ID is not mapped to a Cloudvalt storage plan.");
       fields = {
         plan: firestoreString(plan.name),
@@ -312,6 +472,10 @@ async function handleWebhook(request, env) {
 
 export default {
   async fetch(request, env) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/api/checkout" || pathname === "/checkout") {
+      return handleCreateCheckout(request, env);
+    }
     return handleWebhook(request, env);
   },
 };

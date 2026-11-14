@@ -84,6 +84,28 @@ export function LandingPage({
     setShowAuthModal(true);
   };
 
+  const getProfilePlanId = (planName?: string): "100mb" | "50gb" | "250gb" | "1tb" => {
+    if (planName === "50 GB" || planName === "50 GB Starter") return "50gb";
+    if (planName === "250 GB" || planName === "250 GB Pro Studio") return "250gb";
+    if (planName === "1 TB" || planName === "1 TB Ultimate") return "1tb";
+    return "100mb";
+  };
+
+  const completeLogin = (user: User) => {
+    setStoredUser(user);
+    onLoginSuccess(user);
+    setShowAuthModal(false);
+    if (selectedPlanId !== "100mb") onSelectPlanUpgrade?.(selectedPlanId);
+  };
+
+  const choosePaidPlan = (planId: "50gb" | "250gb" | "1tb") => {
+    if (currentUser?.isFirebaseUser) {
+      onSelectPlanUpgrade?.(planId);
+      return;
+    }
+    handleOpenAuth("signup", planId);
+  };
+
   // Google Sign-In with Firebase
   const handleGoogleSignIn = async () => {
     setAuthLoading(true);
@@ -95,8 +117,9 @@ export function LandingPage({
       const profile = await createOrUpdateUserProfile(
         fbUser,
         fbUser.displayName || undefined,
-        selectedPlanId
+        "100mb"
       );
+      const actualPlanId = getProfilePlanId(profile.plan);
 
       const appUser: User = {
         id: fbUser.uid,
@@ -105,16 +128,14 @@ export function LandingPage({
         avatar: profile.avatarUrl || fbUser.photoURL || undefined,
         avatarFallback: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || "CV")}`,
         role: profile.role || "Visual Creator",
-        plan: profile.plan || (selectedPlanId === "100mb" ? "100 MB Free (Test Mode)" : STORAGE_PLANS[selectedPlanId].name),
-        planId: selectedPlanId,
-        maxStorageBytes: profile.maxStorageBytes || STORAGE_PLANS[selectedPlanId].maxBytes,
+        plan: profile.plan || STORAGE_PLANS[actualPlanId].name,
+        planId: actualPlanId,
+        maxStorageBytes: profile.maxStorageBytes || STORAGE_PLANS[actualPlanId].maxBytes,
         createdAt: profile.createdAt || new Date().toISOString(),
         isFirebaseUser: true,
       };
 
-      setStoredUser(appUser);
-      onLoginSuccess(appUser);
-      setShowAuthModal(false);
+      completeLogin(appUser);
     } catch (err: any) {
       console.error("Firebase Google Auth error:", err);
       if (err.code === "auth/popup-blocked") {
@@ -170,26 +191,25 @@ export function LandingPage({
           const fbUser = auth.currentUser;
           let profile = await fetchUserProfile(fbUser.uid);
           if (!profile) {
-            profile = await createOrUpdateUserProfile(fbUser, nameInput || fbUser.displayName || undefined, selectedPlanId);
+            profile = await createOrUpdateUserProfile(fbUser, nameInput || fbUser.displayName || undefined, "100mb");
           }
-          const planInfo = STORAGE_PLANS[selectedPlanId];
+          const actualPlanId = getProfilePlanId(profile?.plan);
+          const planInfo = STORAGE_PLANS[actualPlanId];
           const appUser: User = {
             id: fbUser.uid,
             name: profile?.displayName || nameInput || fbUser.email?.split("@")[0] || "Vault Creator",
             email: fbUser.email || emailInput,
             avatar: profile?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || "CV")}`,
             role: profile?.role || "Visual Creator",
-            plan: profile?.plan || (selectedPlanId === "100mb" ? "100 MB Free (Test Mode)" : planInfo.name),
-            planId: selectedPlanId,
+            plan: profile?.plan || planInfo.name,
+            planId: actualPlanId,
             maxStorageBytes: profile?.maxStorageBytes || planInfo.maxBytes,
             createdAt: profile?.createdAt || new Date().toISOString(),
             isFirebaseUser: true,
             emailVerified: true,
           };
 
-          setStoredUser(appUser);
-          onLoginSuccess(appUser);
-          setShowAuthModal(false);
+          completeLogin(appUser);
         } else {
           setAuthError(`Email (${auth.currentUser.email}) is not verified yet. Please check your inbox and click the verification link first.`);
         }
@@ -254,7 +274,7 @@ export function LandingPage({
         }
         const cred = await createUserWithEmailAndPassword(auth, email, password);
         fbUser = cred.user;
-        await createOrUpdateUserProfile(fbUser, name, selectedPlanId);
+        await createOrUpdateUserProfile(fbUser, name, "100mb");
 
         // Send email verification link and wait for user confirmation
         try {
@@ -288,10 +308,11 @@ export function LandingPage({
 
       let profile = await fetchUserProfile(fbUser.uid);
       if (!profile) {
-        profile = await createOrUpdateUserProfile(fbUser, name, selectedPlanId);
+        profile = await createOrUpdateUserProfile(fbUser, name, "100mb");
       }
 
-      const planInfo = STORAGE_PLANS[selectedPlanId];
+      const actualPlanId = getProfilePlanId(profile?.plan);
+      const planInfo = STORAGE_PLANS[actualPlanId];
       const appUser: User = {
         id: fbUser.uid,
         name: profile?.displayName || name || fbUser.email?.split("@")[0] || "Vault Creator",
@@ -299,17 +320,15 @@ export function LandingPage({
         avatar: profile?.avatarUrl || fbUser.photoURL || undefined,
         avatarFallback: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || "CV")}`,
         role: profile?.role || "Visual Creator",
-        plan: profile?.plan || (selectedPlanId === "100mb" ? "100 MB Free (Test Mode)" : planInfo.name),
-        planId: selectedPlanId,
+        plan: profile?.plan || planInfo.name,
+        planId: actualPlanId,
         maxStorageBytes: profile?.maxStorageBytes || planInfo.maxBytes,
         createdAt: profile?.createdAt || new Date().toISOString(),
         isFirebaseUser: true,
         emailVerified: Boolean(fbUser.emailVerified),
       };
 
-      setStoredUser(appUser);
-      onLoginSuccess(appUser);
-      setShowAuthModal(false);
+      completeLogin(appUser);
     } catch (err: any) {
       console.error("Firebase Auth error:", err);
       if (err.code === "auth/email-already-in-use") {
@@ -619,7 +638,7 @@ export function LandingPage({
                 </div>
               </div>
               <button
-                onClick={() => window.open(STORAGE_PLANS["50gb"].checkoutUrl, "_blank", "noopener,noreferrer")}
+                onClick={() => choosePaidPlan("50gb")}
                 className="mt-6 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs py-2.5 rounded-xl transition-all shadow-md shadow-white/5"
               >
                 Get 50 GB ($3.99)
@@ -650,7 +669,7 @@ export function LandingPage({
                 </div>
               </div>
               <button
-                onClick={() => window.open(STORAGE_PLANS["250gb"].checkoutUrl, "_blank", "noopener,noreferrer")}
+                onClick={() => choosePaidPlan("250gb")}
                 className="mt-6 w-full bg-emerald-400 hover:bg-emerald-300 text-black font-extrabold text-xs py-2.5 rounded-xl transition-all shadow-md shadow-emerald-400/20"
               >
                 Get 250 GB ($6.99)
@@ -678,7 +697,7 @@ export function LandingPage({
                 </div>
               </div>
               <button
-                onClick={() => window.open(STORAGE_PLANS["1tb"].checkoutUrl, "_blank", "noopener,noreferrer")}
+                onClick={() => choosePaidPlan("1tb")}
                 className="mt-6 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs py-2.5 rounded-xl transition-all"
               >
                 Get 1 TB ($13.99)

@@ -78,6 +78,7 @@ import {
   saveUserFeedback,
 } from "@/lib/firebase";
 import { calculateStorage, formatExactBytes } from "@/lib/storageCalc";
+import { createWhopCheckout } from "@/lib/whopCheckout";
 
 // Format bytes into human readable format
 function formatBytes(bytes: number, decimals = 1): string {
@@ -992,9 +993,14 @@ export default function CloudvaltApp() {
     const planInfo = STORAGE_PLANS[planId];
     if (!planInfo) return;
 
-    if (planInfo.checkoutUrl) {
-      setShowUpgradeModal(false);
-      window.open(planInfo.checkoutUrl, "_blank", "noopener,noreferrer");
+    if (planId !== "100mb") {
+      if (currentUser?.planId === planId) return;
+      try {
+        const purchaseUrl = await createWhopCheckout(planId);
+        window.location.assign(purchaseUrl);
+      } catch (error) {
+        showNotification(error instanceof Error ? error.message : "Could not open checkout.");
+      }
       return;
     }
 

@@ -5,7 +5,6 @@ export interface StoragePlan {
   tagline: string;
   priceFormatted: string;
   priceMonthly: number;
-  checkoutUrl?: string;
   maxBytes: number;
   highlight?: boolean;
   features: string[];
@@ -35,7 +34,6 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     tagline: 'For passionate mobile & mirrorless photographers',
     priceFormatted: '$3.99/month',
     priceMonthly: 3.99,
-    checkoutUrl: 'https://whop.com/checkout/ch_nQGMC9zyxWndgAz/',
     maxBytes: 50 * 1024 * 1024 * 1024, // 50 GB
     features: [
       'Billed every 30 days; no extra first payment charge',
@@ -53,7 +51,6 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     tagline: 'Best for videographers, filmmakers & active creators',
     priceFormatted: '$6.99/month',
     priceMonthly: 6.99,
-    checkoutUrl: 'https://whop.com/checkout/ch_5Ws2YBO75QKKJfS/',
     maxBytes: 250 * 1024 * 1024 * 1024, // 250 GB
     highlight: true,
     features: [
@@ -72,7 +69,6 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     tagline: 'Complete production archive for studios & power creators',
     priceFormatted: '$13.99/month',
     priceMonthly: 13.99,
-    checkoutUrl: 'https://whop.com/checkout/ch_Bk8BD0spJ6gdDgy/',
     maxBytes: 1024 * 1024 * 1024 * 1024, // 1 TB
     features: [
       'Billed every 30 days; no extra first payment charge',
