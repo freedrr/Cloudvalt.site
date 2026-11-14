@@ -68,7 +68,6 @@ import {
   deleteUserFolderInFirestore,
   fetchUserProfile,
   restoreUserFileInFirestore,
-  restoreUserFolderInFirestore,
   renameUserFileInFirestore,
   renameUserFolderInFirestore,
   toggleUserFileFavoriteInFirestore,
@@ -1106,8 +1105,8 @@ export default function CloudvaltApp() {
     event?.stopPropagation();
     try {
       if (currentUser?.id && currentUser.isFirebaseUser) {
-        if (file.isFolder) await restoreUserFolderInFirestore(currentUser.id, file.id);
-        else await restoreUserFileInFirestore(currentUser.id, file.id);
+        if (file.isFolder) throw new Error("This folder was removed when it was sent to Trash. Restore the files individually.");
+        await restoreUserFileInFirestore(currentUser.id, file.id);
       } else {
         const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
           method: "PATCH",
@@ -1118,7 +1117,7 @@ export default function CloudvaltApp() {
         if (!response.ok || !result.success) throw new Error(result.error || "Could not restore file.");
       }
       setFiles((previous) => previous.filter((entry) => entry.id !== file.id));
-      showNotification(file.isFolder ? `Restored folder ${file.name} and its contents.` : `Restored ${file.name}.`);
+      showNotification(`Restored ${file.name}.`);
       await loadFiles();
     } catch (error: any) {
       showNotification(error.message || "Could not restore file.");
@@ -1131,8 +1130,8 @@ export default function CloudvaltApp() {
     try {
       if (currentUser?.id && currentUser.isFirebaseUser) {
         const outcome = await deleteUserFolderInFirestore(currentUser.id, folder.id, folder.folderId || null);
-        showNotification(outcome.movedToTrash
-          ? "Folder and everything inside moved to Trash."
+        showNotification(outcome.trashedFiles
+          ? `${outcome.trashedFiles} file${outcome.trashedFiles === 1 ? "" : "s"} moved to Trash; folder deleted.`
           : "Empty folder deleted.");
       } else {
         const query = currentUser?.id ? `?userId=${encodeURIComponent(currentUser.id)}` : "";
@@ -3159,9 +3158,9 @@ export default function CloudvaltApp() {
         {deleteFolderTarget && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-              <h3 className="text-lg font-bold text-white mb-2">Delete or move folder?</h3>
+              <h3 className="text-lg font-bold text-white mb-2">Delete folder?</h3>
               <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
-                If <strong className="text-white">“{deleteFolderTarget.name}”</strong> contains files or folders, the folder and everything inside will move to Trash together. If it is empty, the folder will be deleted immediately.
+                Delete <strong className="text-white">“{deleteFolderTarget.name}”</strong> from Firestore. Any files inside will move to Trash; nested folders will also be removed.
               </p>
               <div className="flex items-center justify-end gap-2">
                 <button type="button" onClick={() => setDeleteFolderTarget(null)} className="px-4 py-2 text-xs rounded-lg border border-zinc-800 hover:bg-zinc-900 text-zinc-300">Cancel</button>
