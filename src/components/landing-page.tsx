@@ -726,7 +726,7 @@ export function LandingPage({
               },
               {
                 question: "Can I buy a paid storage plan here?",
-                answer: "The app currently shows plan options, but payment checkout and recurring billing are not connected yet. Plan selection changes the displayed storage allowance; it does not charge a card.",
+                answer: "Paid plans open checkout and charge the listed price every 30 days, with no extra first payment charge. Storage upgrades are applied after payment confirmation is connected to your account.",
               },
             ].map((item) => (
               <details key={item.question} className="group rounded-2xl border border-zinc-800 bg-zinc-950 px-5 open:border-zinc-700">

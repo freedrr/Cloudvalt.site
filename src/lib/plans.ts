@@ -33,11 +33,12 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     name: '50 GB Starter',
     badge: 'Creator',
     tagline: 'For passionate mobile & mirrorless photographers',
-    priceFormatted: '$3.99',
+    priceFormatted: '$3.99/month',
     priceMonthly: 3.99,
-    checkoutUrl: 'https://whop.com/checkout/ch_j1P4rARWnUblZZb/',
+    checkoutUrl: 'https://whop.com/checkout/ch_nQGMC9zyxWndgAz/',
     maxBytes: 50 * 1024 * 1024 * 1024, // 50 GB
     features: [
+      'Billed every 30 days; no extra first payment charge',
       '50 GB high-capacity vault (~12,500 photos)',
       'Smooth 4K 60fps video playback',
       'Fast multi-threaded uploads',
@@ -50,12 +51,13 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     name: '250 GB Pro Studio',
     badge: 'Most Popular',
     tagline: 'Best for videographers, filmmakers & active creators',
-    priceFormatted: '$6.99',
+    priceFormatted: '$6.99/month',
     priceMonthly: 6.99,
-    checkoutUrl: 'https://whop.com/checkout/ch_NXhRqdZsxRms742/',
+    checkoutUrl: 'https://whop.com/checkout/ch_5Ws2YBO75QKKJfS/',
     maxBytes: 250 * 1024 * 1024 * 1024, // 250 GB
     highlight: true,
     features: [
+      'Billed every 30 days; no extra first payment charge',
       '250 GB professional storage (~62,500 photos or 50 hrs 4K)',
       'Uncapped bitrate video streaming & scrubbing',
       'RAW, DNG, ProRes, MKV & MP4 support',
@@ -68,11 +70,12 @@ export const STORAGE_PLANS: Record<string, StoragePlan> = {
     name: '1 TB Ultimate',
     badge: 'Best Value',
     tagline: 'Complete production archive for studios & power creators',
-    priceFormatted: '$13.99',
+    priceFormatted: '$13.99/month',
     priceMonthly: 13.99,
-    checkoutUrl: 'https://whop.com/checkout/ch_IYMQSYzwoDCCoQm/',
+    checkoutUrl: 'https://whop.com/checkout/ch_Bk8BD0spJ6gdDgy/',
     maxBytes: 1024 * 1024 * 1024 * 1024, // 1 TB
     features: [
+      'Billed every 30 days; no extra first payment charge',
       '1,000 GB enterprise cloud capacity',
       'Massive 4K / 8K RAW video archive',
       'Highest bandwidth global CDN pipeline',
