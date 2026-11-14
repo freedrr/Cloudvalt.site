@@ -352,11 +352,6 @@ async function isDuplicate(projectId, token, eventId, env) {
 }
 
 async function handleWebhook(request, env) {
-  if (request.method === "GET") return json({
-    ready: Boolean(env.WHOP_WEBHOOK_SECRET && env.FIREBASE_SERVICE_ACCOUNT_JSON
-      && env.WHOP_PLAN_50GB_ID && env.WHOP_PLAN_250GB_ID && env.WHOP_PLAN_1TB_ID),
-    service: "Cloudvalt Whop webhook",
-  });
   if (request.method !== "POST") return json({ error: "Method not allowed." }, 405);
   if (!env.WHOP_WEBHOOK_SECRET) return json({ error: "Webhook verification is not configured." }, 503);
 
@@ -379,15 +374,36 @@ async function handleWebhook(request, env) {
   } catch {
     return json({ error: "Invalid webhook payload." }, 400);
   }
+  const eventType = event.event || event.type;
   const eventId = request.headers.get("webhook-id") || event.id;
-  if (!eventId || typeof event.type !== "string" || !event.data || typeof event.data !== "object") {
-    return json({ error: "Webhook event is missing required fields." }, 400);
+  console.log("📩 Webhook received:", eventType || "unknown", eventId || "");
+  const respond = (extra = {}, status = 200) => json({
+    received: true,
+    event: eventType || null,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  }, status);
+
+  if (typeof eventType !== "string") {
+    return json({ error: "Webhook event is missing its event type." }, 400);
   }
 
-  if (event.type === "payment.failed") return json({ received: true, ignored: true });
-  if (!["payment.succeeded", "membership.activated", "membership.deactivated"].includes(event.type)) {
-    return json({ received: true, ignored: true });
+  if (eventType === "payment.failed") {
+    console.log("❌ PAYMENT FAILED:", eventId || "unknown");
+    return respond({ ignored: true });
   }
+  if (eventType === "payment.created") {
+    console.log("⏳ PAYMENT CREATED (PENDING):", eventId || "unknown");
+    return respond({ pending: true });
+  }
+  if (!["payment.succeeded", "membership.activated", "membership.deactivated"].includes(eventType)) {
+    console.log("ℹ️ OTHER WEBHOOK EVENT:", eventType, eventId || "");
+    return respond({ ignored: true });
+  }
+  if (!eventId || !event.data || typeof event.data !== "object") {
+    return json({ error: "Webhook event is missing required fields." }, 400);
+  }
+  if (eventType === "payment.succeeded") console.log("✅ PAYMENT SUCCEEDED:", eventId);
 
   if (!env.FIREBASE_SERVICE_ACCOUNT_JSON) return json({ error: "Payment account updates are not configured." }, 503);
 
@@ -399,7 +415,7 @@ async function handleWebhook(request, env) {
     }
     const token = await getGoogleAccessToken(serviceAccount);
     const duplicateCheck = await isDuplicate(projectId, token, eventId, env);
-    if (duplicateCheck.duplicate) return json({ received: true, duplicate: true });
+    if (duplicateCheck.duplicate) return respond({ duplicate: true });
 
     const metadata = getEventMetadata(event.data);
     const metadataUid = typeof metadata.firebase_uid === "string" ? metadata.firebase_uid : "";
@@ -412,11 +428,11 @@ async function handleWebhook(request, env) {
     const updateMask = ["plan", "planId", "maxStorageBytes", "updatedAt"];
     let fields;
 
-    if (event.type === "membership.deactivated") {
+    if (eventType === "membership.deactivated") {
       const membershipId = readString(event.data.id);
       const savedMembershipId = user.fields?.whopMembershipId?.stringValue || "";
       if (savedMembershipId && membershipId && savedMembershipId !== membershipId) {
-        return json({ received: true, ignored: true, reason: "A different membership is active." });
+        return respond({ ignored: true, reason: "A different membership is active." });
       }
       fields = {
         plan: firestoreString("100 MB Free"),
@@ -435,7 +451,7 @@ async function handleWebhook(request, env) {
         maxStorageBytes: firestoreInteger(plan.bytes),
         updatedAt: firestoreString(new Date().toISOString()),
       };
-      const membershipId = event.type === "membership.activated"
+      const membershipId = eventType === "membership.activated"
         ? readString(event.data.id)
         : getMembershipId(event.data);
       if (membershipId) {
@@ -457,16 +473,16 @@ async function handleWebhook(request, env) {
     await firestoreRequest(projectId, token, `whopWebhookEvents/${duplicateCheck.documentId}`, "PATCH", {
       fields: {
         eventId: firestoreString(eventId),
-        eventType: firestoreString(event.type),
+        eventType: firestoreString(eventType),
         processedAt: firestoreString(new Date().toISOString()),
         userId: firestoreString(uid),
       },
     }, env);
-    return json({ received: true, processed: true });
+    return respond({ processed: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Webhook processing failed.";
-    console.error("Whop webhook processing failed:", { type: event.type, message });
-    return json({ error: message }, 503);
+    console.error("🚨 Webhook error:", { event: eventType, id: eventId, message });
+    return json({ error: "Webhook processing failed" }, 500);
   }
 }
 
