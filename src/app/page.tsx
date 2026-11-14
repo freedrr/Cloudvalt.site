@@ -2230,7 +2230,7 @@ export default function CloudvaltApp() {
                             <span className="mt-4 block truncate pr-8 text-sm font-semibold text-white">{file.name}</span>
                             <span className="mt-1 block text-xs text-zinc-400">Open folder</span>
                           </button>
-                          <button type="button" title="Delete folder" aria-label={`Delete folder ${file.name}`} onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(file); }} className="absolute right-3 top-3 rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-400">
+                          <button type="button" title="Move folder to Trash" aria-label={`Move folder ${file.name} to Trash`} onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(file); }} className="absolute right-3 top-3 rounded-lg p-2 text-zinc-500 hover:bg-zinc-800 hover:text-white">
                             <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
@@ -2359,7 +2359,7 @@ export default function CloudvaltApp() {
                           {file.isFolder ? (
                             <>
                               <button onClick={(e) => { e.stopPropagation(); setRenameTarget(file); setNewNameInput(file.name); }} title="Rename folder" className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800"><Pencil className="h-4 w-4" /></button>
-                              <button onClick={(e) => { e.stopPropagation(); setDeleteFolderTarget(file); }} title="Delete folder" className="p-1.5 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800"><Trash2 className="h-4 w-4" /></button>
+                              <button onClick={(e) => { e.stopPropagation(); setDeleteFolderTarget(file); }} title="Move folder to Trash" className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800"><Trash2 className="h-4 w-4" /></button>
                             </>
                           ) : null}
                           {file.type === "video" && (
@@ -2526,7 +2526,7 @@ export default function CloudvaltApp() {
                             <span className="mt-4 block truncate pr-8 text-sm font-semibold text-white">{file.name}</span>
                             <span className="mt-1 block text-xs text-zinc-400">Open folder</span>
                           </button>
-                          <button type="button" title="Delete folder" aria-label={`Delete folder ${file.name}`} onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(file); }} className="absolute right-3 top-3 rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-400">
+                          <button type="button" title="Move folder to Trash" aria-label={`Move folder ${file.name} to Trash`} onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(file); }} className="absolute right-3 top-3 rounded-lg p-2 text-zinc-500 hover:bg-zinc-800 hover:text-white">
                             <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
@@ -2703,8 +2703,8 @@ export default function CloudvaltApp() {
                           ><Pencil className="h-4 w-4" /></button>}
                           {file.isFolder && <button
                             onClick={(e) => { e.stopPropagation(); setDeleteFolderTarget(file); }}
-                            title="Delete folder"
-                            className="p-1.5 rounded text-zinc-400 hover:text-red-400"
+                            title="Move folder to Trash"
+                            className="p-1.5 rounded text-zinc-400 hover:text-white"
                           ><Trash2 className="h-4 w-4" /></button>}
                           {!file.isFolder && <button
                             onClick={(e) => {
@@ -3160,14 +3160,14 @@ export default function CloudvaltApp() {
         {deleteFolderTarget && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-zinc-950 border border-zinc-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-              <h3 className="text-lg font-bold text-white mb-2">Delete folder?</h3>
+              <h3 className="text-lg font-bold text-white mb-2">Move folder to Trash?</h3>
               <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
-                Delete <strong className="text-white">“{deleteFolderTarget.name}”</strong> from Firestore. Any files inside will move to Trash; nested folders will also be removed.
+                Move <strong className="text-white">“{deleteFolderTarget.name}”</strong> and everything inside it to Trash. Restore the folder to bring its contents back.
               </p>
               <div className="flex items-center justify-end gap-2">
                 <button type="button" onClick={() => setDeleteFolderTarget(null)} className="px-4 py-2 text-xs rounded-lg border border-zinc-800 hover:bg-zinc-900 text-zinc-300">Cancel</button>
                 <button type="button" onClick={() => void confirmDeleteFolder()} className="px-4 py-2 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold flex items-center gap-1.5 shadow-sm">
-                  <Trash2 className="h-3.5 w-3.5" /> Continue
+                  <Trash2 className="h-3.5 w-3.5" /> Move to Trash
                 </button>
               </div>
             </div>
