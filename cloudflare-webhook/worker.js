@@ -1,4 +1,4 @@
-const DATABASE_ID = "ai-studio-remixremixcloudv-42a2b61a-2d55-4ff5-9eec-86f128500033";
+const DEFAULT_DATABASE_ID = "ai-studio-remixremixcloudv-42a2b61a-2d55-4ff5-9eec-86f128500033";
 const encoder = new TextEncoder();
 let cachedGoogleToken = { value: "", expiresAt: 0 };
 
@@ -95,13 +95,14 @@ async function getGoogleAccessToken(serviceAccount) {
   return cachedGoogleToken.value;
 }
 
-function firestoreUrl(projectId, documentPath = "") {
-  const base = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(DATABASE_ID)}/documents`;
+function firestoreUrl(projectId, documentPath = "", env = {}) {
+  const databaseId = env.FIRESTORE_DATABASE_ID || DEFAULT_DATABASE_ID;
+  const base = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents`;
   return documentPath ? `${base}/${documentPath}` : base;
 }
 
-async function firestoreRequest(projectId, token, path, method, body) {
-  const response = await fetch(firestoreUrl(projectId, path), {
+async function firestoreRequest(projectId, token, path, method, body, env) {
+  const response = await fetch(firestoreUrl(projectId, path, env), {
     method,
     headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -155,8 +156,8 @@ function planForWhopId(env, planId) {
   return plans.find((plan) => plan.id && plan.id === planId) || null;
 }
 
-async function findUserByEmail(projectId, token, email) {
-  const queryUrl = `${firestoreUrl(projectId)}:runQuery`;
+async function findUserByEmail(projectId, token, email, env) {
+  const queryUrl = `${firestoreUrl(projectId, "", env)}:runQuery`;
   const query = (value) => fetch(queryUrl, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -182,10 +183,10 @@ async function findUserByEmail(projectId, token, email) {
   return matches[0];
 }
 
-async function isDuplicate(projectId, token, eventId) {
+async function isDuplicate(projectId, token, eventId, env) {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(eventId)));
   const documentId = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  const response = await fetch(firestoreUrl(projectId, `whopWebhookEvents/${documentId}`), {
+  const response = await fetch(firestoreUrl(projectId, `whopWebhookEvents/${documentId}`, env), {
     headers: { authorization: `Bearer ${token}` },
   });
   if (response.ok) return { duplicate: true, documentId };
@@ -193,8 +194,7 @@ async function isDuplicate(projectId, token, eventId) {
   throw new Error("Could not check whether this payment event was already handled.");
 }
 
-export async function onRequest(context) {
-  const { request, env } = context;
+async function handleWebhook(request, env) {
   if (request.method === "GET") return json({
     ready: Boolean(env.WHOP_WEBHOOK_SECRET && env.FIREBASE_SERVICE_ACCOUNT_JSON
       && env.WHOP_PLAN_50GB_ID && env.WHOP_PLAN_250GB_ID && env.WHOP_PLAN_1TB_ID),
@@ -241,12 +241,12 @@ export async function onRequest(context) {
       return json({ error: "Payment account updates are not configured correctly." }, 503);
     }
     const token = await getGoogleAccessToken(serviceAccount);
-    const duplicateCheck = await isDuplicate(projectId, token, eventId);
+    const duplicateCheck = await isDuplicate(projectId, token, eventId, env);
     if (duplicateCheck.duplicate) return json({ received: true, duplicate: true });
 
     const email = getEmail(event.data);
     if (!email) throw new Error("Whop did not include the buyer email. Enable buyer email access for these webhook events.");
-    const user = await findUserByEmail(projectId, token, email);
+    const user = await findUserByEmail(projectId, token, email, env);
     const uid = user.name.split("/").pop();
     const updateMask = ["plan", "planId", "maxStorageBytes", "updatedAt"];
     let fields;
@@ -285,7 +285,7 @@ export async function onRequest(context) {
     }
 
     const userPath = `users/${encodeURIComponent(uid)}`;
-    const patchUrl = new URL(firestoreUrl(projectId, userPath));
+    const patchUrl = new URL(firestoreUrl(projectId, userPath, env));
     for (const field of updateMask) patchUrl.searchParams.append("updateMask.fieldPaths", field);
     const userUpdate = await fetch(patchUrl, {
       method: "PATCH",
@@ -301,7 +301,7 @@ export async function onRequest(context) {
         processedAt: firestoreString(new Date().toISOString()),
         userId: firestoreString(uid),
       },
-    });
+    }, env);
     return json({ received: true, processed: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Webhook processing failed.";
@@ -309,3 +309,9 @@ export async function onRequest(context) {
     return json({ error: message }, 503);
   }
 }
+
+export default {
+  async fetch(request, env) {
+    return handleWebhook(request, env);
+  },
+};
